@@ -14,35 +14,48 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// CORS configuration - Allow all origins (can be restricted later for security)
-const corsOptions = {
-  origin: true, // Allow all origins
-  credentials: true, // Allow cookies/auth headers
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-};
-
-app.use(cors(corsOptions));
-
-// Additional CORS headers to ensure they're set (in case Railway overrides)
+// CORS MUST be the first middleware - before anything else
+// Handle CORS manually to ensure Railway doesn't override it
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-  } else {
-    res.header('Access-Control-Allow-Origin', '*');
-  }
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   
-  // Handle preflight requests
+  // Log for debugging
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    console.log('🔍 Preflight request from:', origin);
   }
+  
+  // Set CORS headers explicitly
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, X-Content-Range');
+  res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+  
+  // Handle preflight requests immediately
+  if (req.method === 'OPTIONS') {
+    console.log('✅ Preflight request handled, origin:', origin);
+    return res.status(200).end();
+  }
+  
   next();
 });
+
+// Also use cors middleware as backup
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow all origins
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+}));
 
 // Middleware
 app.use(express.json());
