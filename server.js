@@ -14,48 +14,67 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// CORS MUST be the first middleware - before anything else
-// Handle CORS manually to ensure Railway doesn't override it
+// CORS configuration - Explicitly allow your Vercel frontend domain
+const allowedOrigins = [
+  'https://my-project-mqxfmghrv-lhehlolbro123-2933s-projects.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  // Add your production Vercel domain when you have it
+  // You can also set this via environment variable: ALLOWED_ORIGINS
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [])
+];
+
+// CORS middleware - MUST be first
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      // Log for debugging
+      console.log('⚠️  CORS blocked origin:', origin);
+      console.log('✅ Allowed origins:', allowedOrigins);
+      // In development, allow all; in production, be strict
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  credentials: true, // Allow cookies/auth headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+}));
+
+// Additional CORS headers as backup (in case Railway overrides)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   
-  // Log for debugging
-  if (req.method === 'OPTIONS') {
-    console.log('🔍 Preflight request from:', origin);
-  }
-  
-  // Set CORS headers explicitly
-  if (origin) {
+  // Only set headers if origin is allowed
+  if (origin && allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    
+    // Log for debugging
+    if (req.method === 'OPTIONS') {
+      console.log('✅ Preflight request handled for origin:', origin);
+    }
   }
   
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, X-Content-Range');
-  res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
-  
-  // Handle preflight requests immediately
+  // Handle preflight requests
   if (req.method === 'OPTIONS') {
-    console.log('✅ Preflight request handled, origin:', origin);
     return res.status(200).end();
   }
   
   next();
 });
-
-// Also use cors middleware as backup
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow all origins
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
-}));
 
 // Middleware
 app.use(express.json());
