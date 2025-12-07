@@ -14,73 +14,40 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// CORS configuration - Explicitly allow your Vercel frontend domain
+// ---------------- CORS CONFIGURATION ---------------- //
+// Allow localhost for development and all Vercel frontend deployments
 const allowedOrigins = [
-  'https://my-project-mqxfmghrv-lhehlolbro123-2933s-projects.vercel.app',
   'http://localhost:3000',
   'http://localhost:3001',
-  // Add your production Vercel domain when you have it
-  // You can also set this via environment variable: ALLOWED_ORIGINS
-  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [])
+  'https://coffee-arts-paris.vercel.app',
+  'http://localhost:3002'
 ];
 
-// CORS middleware - MUST be first
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like Postman or server-to-server)
     if (!origin) return callback(null, true);
-    
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      // Log for debugging
-      console.log('⚠️  CORS blocked origin:', origin);
-      console.log('✅ Allowed origins:', allowedOrigins);
-      // In development, allow all; in production, be strict
-      if (process.env.NODE_ENV !== 'production') {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
+
+    // Allow localhost and Vercel preview deployments
+    if (origin.includes('localhost') || origin.endsWith('.vercel.app')) {
+      return callback(null, true);
     }
+
+    // Block everything else
+    console.log('❌ CORS blocked origin:', origin);
+    return callback(new Error(`CORS policy: Origin ${origin} not allowed`));
   },
-  credentials: true, // Allow cookies/auth headers
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
 }));
 
-// Additional CORS headers as backup (in case Railway overrides)
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  
-  // Only set headers if origin is allowed
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
-    
-    // Log for debugging
-    if (req.method === 'OPTIONS') {
-      console.log('✅ Preflight request handled for origin:', origin);
-    }
-  }
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  
-  next();
-});
-
-// Middleware
+// ---------------- MIDDLEWARE ---------------- //
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Health check route
+// ---------------- HEALTH CHECK ---------------- //
 app.get('/', (req, res) => {
   res.json({
     message: 'Coffee Arts Paris Backend API',
@@ -89,7 +56,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Test database connection route
+// ---------------- TEST DATABASE CONNECTION ---------------- //
 app.get('/test-db', async (req, res) => {
   try {
     const result = await testConnection();
@@ -109,16 +76,16 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
-// API Routes
+// ---------------- API ROUTES ---------------- //
 app.use('/api/products', productsRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/contact', contactRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/upload', uploadRouter);
 
-// Error handling middleware
+// ---------------- ERROR HANDLING ---------------- //
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  console.error('Error:', err.message);
   res.status(500).json({
     success: false,
     message: 'Internal server error',
@@ -126,7 +93,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// ---------------- 404 ROUTE ---------------- //
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -134,11 +101,10 @@ app.use((req, res) => {
   });
 });
 
-// Start server
+// ---------------- START SERVER ---------------- //
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📍 Test database: http://localhost:${PORT}/test-db`);
   console.log(`📍 Admin routes: http://localhost:${PORT}/api/admin/*`);
   console.log(`📍 Contact route: http://localhost:${PORT}/api/contact`);
 });
-
