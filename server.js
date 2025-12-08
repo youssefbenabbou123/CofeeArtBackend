@@ -13,76 +13,55 @@ const app = express();
 const PORT = process.env.PORT || 3002;
 
 // ---------------- CORS CONFIGURATION ---------------- //
+// IMPORTANT: This must be the VERY FIRST middleware to prevent Railway proxy from intercepting
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'https://my-project-plum-eta-90.vercel.app',  // Explicit Vercel production URL
-  /^https:\/\/.*\.vercel\.app$/,  // regex to match any Vercel preview/prod deployment
+  'https://my-project-plum-eta-90.vercel.app',
 ];
 
-// Custom CORS middleware to ensure headers are set correctly
-const corsOptions = {
+// Helper function to check if origin is allowed
+function isOriginAllowed(origin) {
+  if (!origin) return true; // Allow server-to-server / Postman
+  return allowedOrigins.includes(origin) || /^https:\/\/.*\.vercel\.app$/.test(origin);
+}
+
+// CRITICAL: Set CORS headers FIRST, before anything else
+// This prevents Railway's proxy from overriding our headers
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  if (isOriginAllowed(origin) && origin) {
+    // Set headers explicitly on EVERY response
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24 hours
+  }
+  
+  // Handle OPTIONS preflight requests IMMEDIATELY
+  if (req.method === 'OPTIONS') {
+    console.log('✅ OPTIONS preflight handled for origin:', origin);
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+// Also use the cors package as backup
+app.use(cors({
   origin: function(origin, callback) {
-    if (!origin) return callback(null, true); // allow Postman/server-to-server
-    // Check if origin is in allowedOrigins
-    const isAllowed = allowedOrigins.some(o => {
-      if (o instanceof RegExp) {
-        return o.test(origin);
-      }
-      return o === origin;
-    });
-    
-    if (isAllowed) {
-      console.log('✅ CORS allowed origin:', origin);
+    if (isOriginAllowed(origin)) {
       return callback(null, true);
     }
     console.log('❌ CORS blocked origin:', origin);
     return callback(new Error(`CORS policy: Origin ${origin} not allowed`));
   },
   credentials: true,
-  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept'],
-  exposedHeaders: ['Content-Range','X-Content-Range']
-};
-
-app.use(cors(corsOptions));
-
-// Explicitly handle preflight OPTIONS requests to ensure headers are set
-app.options('*', (req, res) => {
-  const origin = req.headers.origin;
-  const isAllowed = allowedOrigins.some(o => {
-    if (o instanceof RegExp) {
-      return o.test(origin);
-    }
-    return o === origin;
-  });
-  
-  if (isAllowed && origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    console.log('✅ Preflight request handled, origin:', origin);
-  }
-  res.sendStatus(204);
-});
-
-// Additional middleware to set CORS headers on all responses
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const isAllowed = allowedOrigins.some(o => {
-    if (o instanceof RegExp) {
-      return o.test(origin);
-    }
-    return o === origin;
-  });
-  
-  if (isAllowed && origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-  }
-  next();
-});
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+}));
 
 // ---------------- MIDDLEWARE ---------------- //
 app.use(express.json());
