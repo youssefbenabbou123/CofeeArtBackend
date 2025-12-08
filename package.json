@@ -7,7 +7,13 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "create-admin": "node scripts/create-admin.js"
+    "create-admin": "node scripts/create-admin.js",
+    "seed-blogs": "node seed-blogs.js",
+    "setup-blogs": "node setup-blogs-railway.js",
+    "insert-blogs": "node insert-blogs-to-railway.js",
+    "upload-blog-images": "node upload-blog-images.js",
+    "setup-guest-orders": "node setup-guest-orders.js",
+    "migrate-all": "node setup-all-migrations.js"
   },
   "keywords": [
     "express",
@@ -17,13 +23,17 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
     "bcrypt": "^5.1.1",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
+    "csv-writer": "^1.6.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
-    "pg": "^8.11.3"
+    "pdfkit": "^0.17.2",
+    "pg": "^8.11.3",
+    "stripe": "^20.0.0"
   }
 }

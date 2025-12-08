@@ -46,6 +46,33 @@ export function verifyToken(req, res, next) {
   }
 }
 
+// Optional middleware - sets req.user if token exists, but doesn't require it
+export function optionalAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.replace('Bearer ', '').trim();
+      
+      if (token && token !== '') {
+        try {
+          const decoded = jwt.verify(token, JWT_SECRET);
+          req.user = decoded;
+        } catch (error) {
+          // Token invalid or expired, but continue without user
+          req.user = null;
+        }
+      }
+    }
+    
+    next();
+  } catch (error) {
+    // Continue without user if there's an error
+    req.user = null;
+    next();
+  }
+}
+
 // Middleware to check if user is admin
 export async function requireAdmin(req, res, next) {
   try {
