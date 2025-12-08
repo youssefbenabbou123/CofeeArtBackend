@@ -1,16 +1,19 @@
 const allowedOrigins = [
+  "https://my-project-78bhaky0t-lhehlolbro123-2933s-projects.vercel.app",
   "http://localhost:3000",
   "http://localhost:3001",
-  "https://my-project-plum-eta-90.vercel.app",
+  "http://localhost:3002",
+  "http://localhost:3003",
+  "http://localhost:3004",
 ];
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true); // allow Postman / server requests
+    if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("CORS not allowed for " + origin));
+    return callback(new Error("Not allowed by CORS: " + origin));
   },
-  credentials: true,
+  credentials: true
 }));
 
-app.options("*", cors()); // <-- CRITICAL for Railway
+app.options("*", cors());
