@@ -20,7 +20,8 @@ const allowedOrigins = [
   /^https:\/\/.*\.vercel\.app$/,  // regex to match any Vercel preview/prod deployment
 ];
 
-app.use(cors({
+// Custom CORS middleware to ensure headers are set correctly
+const corsOptions = {
   origin: function(origin, callback) {
     if (!origin) return callback(null, true); // allow Postman/server-to-server
     // Check if origin is in allowedOrigins
@@ -42,7 +43,46 @@ app.use(cors({
   methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept'],
   exposedHeaders: ['Content-Range','X-Content-Range']
-}));
+};
+
+app.use(cors(corsOptions));
+
+// Explicitly handle preflight OPTIONS requests to ensure headers are set
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  const isAllowed = allowedOrigins.some(o => {
+    if (o instanceof RegExp) {
+      return o.test(origin);
+    }
+    return o === origin;
+  });
+  
+  if (isAllowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    console.log('✅ Preflight request handled, origin:', origin);
+  }
+  res.sendStatus(204);
+});
+
+// Additional middleware to set CORS headers on all responses
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const isAllowed = allowedOrigins.some(o => {
+    if (o instanceof RegExp) {
+      return o.test(origin);
+    }
+    return o === origin;
+  });
+  
+  if (isAllowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  next();
+});
 
 // ---------------- MIDDLEWARE ---------------- //
 app.use(express.json());
