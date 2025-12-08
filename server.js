@@ -16,14 +16,23 @@ const PORT = process.env.PORT || 3002;
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  /\.vercel\.app$/  // regex to match any Vercel preview/prod deployment
+  'https://my-project-plum-eta-90.vercel.app',  // Explicit Vercel production URL
+  /^https:\/\/.*\.vercel\.app$/,  // regex to match any Vercel preview/prod deployment
 ];
 
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin) return callback(null, true); // allow Postman/server-to-server
     // Check if origin is in allowedOrigins
-    if (allowedOrigins.some(o => (o instanceof RegExp ? o.test(origin) : o === origin))) {
+    const isAllowed = allowedOrigins.some(o => {
+      if (o instanceof RegExp) {
+        return o.test(origin);
+      }
+      return o === origin;
+    });
+    
+    if (isAllowed) {
+      console.log('✅ CORS allowed origin:', origin);
       return callback(null, true);
     }
     console.log('❌ CORS blocked origin:', origin);
