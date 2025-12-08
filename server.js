@@ -8,6 +8,7 @@ const PORT = process.env.PORT || 3002;
 
 // ---------------- CORS CONFIG ---------------- //
 const allowedOrigins = [
+  "https://my-project-ovwmn55cv-lhehlolbro123-2933s-projects.vercel.app",
   "http://localhost:3000",
   "https://my-project-78bhaky0t-lhehlolbro123-2933s-projects.vercel.app",
 ];
