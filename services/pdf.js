@@ -26,8 +26,8 @@ export async function generateInvoicePDF(orderData) {
       // Company info
       doc.fontSize(10)
          .text('Coffee Arts Paris', 50, 100)
-         .text('123 Rue de la Céramique', 50, 115)
-         .text('75001 Paris, France', 50, 130)
+         .text('25 Boulevard du Temple', 50, 115)
+         .text('75003 PARIS', 50, 130)
          .text('SIRET: 123 456 789 00012', 50, 145);
 
       // Invoice details
