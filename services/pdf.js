@@ -98,18 +98,18 @@ export async function generateInvoicePDF(orderData) {
          const tvaAmount = subtotal * (tvaRate / 100);
          const total = subtotal + tvaAmount;
 
-         doc.fontSize(10)
-            .text('Sous-total HT:', 400, itemsY, { align: 'right' })
-            .text(`${subtotal.toFixed(2)}€`, 500, itemsY, { align: 'right' });
+         doc.fontSize(10);
+         doc.text('Sous-total HT:', 350, itemsY);
+         doc.text(`${subtotal.toFixed(2)}€`, 480, itemsY);
          itemsY += 15;
 
-         doc.text(`TVA (${tvaRate}%):`, 400, itemsY, { align: 'right' })
-            .text(`${tvaAmount.toFixed(2)}€`, 500, itemsY, { align: 'right' });
+         doc.text(`TVA (${tvaRate}%):`, 350, itemsY);
+         doc.text(`${tvaAmount.toFixed(2)}€`, 480, itemsY);
          itemsY += 15;
 
-         doc.fontSize(12).font('Helvetica-Bold')
-            .text('Total TTC:', 400, itemsY, { align: 'right' })
-            .text(`${total.toFixed(2)}€`, 500, itemsY, { align: 'right' });
+         doc.fontSize(12).font('Helvetica-Bold');
+         doc.text('Total TTC:', 350, itemsY);
+         doc.text(`${total.toFixed(2)}€`, 480, itemsY);
 
          // Footer
          const footerY = 700;
