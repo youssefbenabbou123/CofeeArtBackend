@@ -33,6 +33,7 @@ const allowedOrigins = [
   'https://my-project-ovwmn55cv-lhehlolbro123-2933s-projects.vercel.app',
   'https://my-project-78bhaky0t-lhehlolbro123-2933s-projects.vercel.app',
   'https://my-project-bewi697zq-lhehlolbro123-2933s-projects.vercel.app',
+  'https://my-project-oz60xibo6-lhehlolbro123-2933s-projects.vercel.app',
   /^https:\/\/.*\.vercel\.app$/,  // regex to match any Vercel deployment
 ];
 
