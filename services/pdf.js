@@ -38,6 +38,24 @@ export async function generateInvoicePDF(orderData) {
             .text(`Facture N°: ${orderId ? orderId.substring(0, 8) : 'N/A'}`, 400, invoiceY, { align: 'right' })
             .text(`Date: ${new Date(createdAt).toLocaleDateString('fr-FR')}`, 400, invoiceY + 15, { align: 'right' })
             .text(`Statut: ${orderData.status || 'N/A'}`, 400, invoiceY + 30, { align: 'right' });
+         
+         // Payment information
+         let paymentY = invoiceY + 45;
+         if (orderData.payment_status) {
+            const paymentStatusText = orderData.payment_status === 'paid' ? 'Payé' : 
+                                     orderData.payment_status === 'pending' ? 'En attente' : 
+                                     orderData.payment_status;
+            doc.text(`Paiement: ${paymentStatusText}`, 400, paymentY, { align: 'right' });
+            paymentY += 15;
+         }
+         if (orderData.payment_method) {
+            doc.text(`Méthode: ${orderData.payment_method}`, 400, paymentY, { align: 'right' });
+            paymentY += 15;
+         }
+         if (orderData.stripe_payment_intent_id) {
+            doc.fontSize(8)
+               .text(`ID Transaction: ${orderData.stripe_payment_intent_id.substring(0, 20)}...`, 400, paymentY, { align: 'right' });
+         }
 
          // Customer info
          const customerY = 200;
@@ -93,23 +111,33 @@ export async function generateInvoicePDF(orderData) {
          doc.moveTo(50, itemsY).lineTo(550, itemsY).stroke();
          itemsY += 20;
 
-         // Totals
-         const tvaRate = orderData.tva_rate || 20;
-         const tvaAmount = subtotal * (tvaRate / 100);
-         const total = subtotal + tvaAmount;
-
-         doc.fontSize(10);
-         doc.text('Sous-total HT:', 350, itemsY);
-         doc.text(`${subtotal.toFixed(2)}€`, 480, itemsY);
-         itemsY += 15;
-
-         doc.text(`TVA (${tvaRate}%):`, 350, itemsY);
-         doc.text(`${tvaAmount.toFixed(2)}€`, 480, itemsY);
-         itemsY += 15;
+         // Total (sans TVA)
+         const total = subtotal;
 
          doc.fontSize(12).font('Helvetica-Bold');
-         doc.text('Total TTC:', 350, itemsY);
+         doc.text('Total:', 350, itemsY);
          doc.text(`${total.toFixed(2)}€`, 480, itemsY);
+
+         // Payment section (if paid)
+         if (orderData.payment_status === 'paid') {
+            let paymentSectionY = itemsY + 60;
+            doc.fontSize(10).font('Helvetica-Bold')
+               .text('Informations de paiement', 50, paymentSectionY);
+            paymentSectionY += 20;
+            
+            doc.fontSize(9).font('Helvetica');
+            if (orderData.payment_method) {
+               doc.text(`Méthode de paiement: ${orderData.payment_method}`, 50, paymentSectionY);
+               paymentSectionY += 15;
+            }
+            if (orderData.stripe_payment_intent_id) {
+               doc.text(`Transaction ID: ${orderData.stripe_payment_intent_id}`, 50, paymentSectionY);
+               paymentSectionY += 15;
+            }
+            doc.text(`Statut: Payé`, 50, paymentSectionY);
+            paymentSectionY += 15;
+            doc.text(`Date de paiement: ${new Date(createdAt).toLocaleDateString('fr-FR')}`, 50, paymentSectionY);
+         }
 
          // Footer
          const footerY = 700;

@@ -1,8 +1,12 @@
 import express from 'express';
+import dotenv from 'dotenv';
 import pool from '../db.js';
 import { optionalAuth, verifyToken } from '../middleware/auth.js';
 import { sendOrderConfirmation } from '../services/email.js';
 import { createPaymentIntent } from '../services/stripe.js';
+
+// Ensure environment variables are loaded
+dotenv.config();
 
 // Helper function to sync client from order
 async function syncClient(data) {
@@ -103,18 +107,41 @@ router.post('/', optionalAuth, async (req, res) => {
     // Create Stripe payment intent if requested
     let paymentIntentId = null;
     let clientSecret = null;
-    if (create_payment_intent && process.env.STRIPE_SECRET_KEY) {
-      try {
-        const paymentResult = await createPaymentIntent(total, 'eur', {
-          order_type: 'product',
-          guest_email: guest_email || null,
-          user_id: userId || null
-        });
-        paymentIntentId = paymentResult.paymentIntentId;
-        clientSecret = paymentResult.clientSecret;
-      } catch (stripeError) {
-        console.error('Error creating payment intent:', stripeError);
-        // Continue without payment intent
+    let stripeError = null;
+    
+    if (create_payment_intent) {
+      const stripeKey = process.env.STRIPE_SECRET_KEY;
+      
+      if (!stripeKey) {
+        console.error('❌ STRIPE_SECRET_KEY is not set in environment variables');
+        console.error('   Payment intent creation skipped. Please add STRIPE_SECRET_KEY to your .env file.');
+        console.error('   For deployed services (Vercel/Railway), add it to the environment variables in the dashboard.');
+        stripeError = 'STRIPE_SECRET_KEY not configured';
+      } else if (!stripeKey.startsWith('sk_')) {
+        console.error('❌ STRIPE_SECRET_KEY format is invalid');
+        console.error('   Stripe secret keys must start with "sk_test_" or "sk_live_"');
+        console.error('   Current key prefix:', stripeKey.substring(0, 10) + '...');
+        stripeError = 'STRIPE_SECRET_KEY format is invalid';
+      } else {
+        try {
+          console.log('🔄 Creating Stripe payment intent for amount:', total, 'EUR');
+          const paymentResult = await createPaymentIntent(total, 'eur', {
+            order_type: 'product',
+            guest_email: guest_email || null,
+            user_id: userId || null
+          });
+          paymentIntentId = paymentResult.paymentIntentId;
+          clientSecret = paymentResult.clientSecret;
+          console.log('✅ Payment intent created successfully');
+          console.log('   Payment Intent ID:', paymentIntentId);
+          console.log('   Client Secret:', clientSecret.substring(0, 20) + '...');
+        } catch (err) {
+          console.error('❌ Error creating payment intent:', err.message);
+          console.error('   Error type:', err.type || 'Unknown');
+          console.error('   Error code:', err.code || 'N/A');
+          console.error('   Full error:', err);
+          stripeError = err.message || 'Failed to create payment intent';
+        }
       }
     }
 
@@ -151,7 +178,7 @@ router.post('/', optionalAuth, async (req, res) => {
           shipping_city || null,
           shipping_postal_code || null,
           shipping_country || 'France',
-          'pending',
+          'confirmed',
           paymentIntentId ? 'pending' : 'unpaid',
           payment_method || null,
           paymentIntentId
@@ -204,6 +231,19 @@ router.post('/', optionalAuth, async (req, res) => {
         }
       }
 
+      // Log payment intent status for debugging
+      if (create_payment_intent) {
+        if (clientSecret) {
+          console.log('✅ Payment intent included in order response');
+        } else {
+          console.warn('⚠️  Payment intent was requested but not created');
+          console.warn('   STRIPE_SECRET_KEY available:', !!process.env.STRIPE_SECRET_KEY);
+          if (stripeError) {
+            console.warn('   Error reason:', stripeError);
+          }
+        }
+      }
+
       res.status(201).json({
         success: true,
         message: 'Commande créée avec succès',
@@ -214,7 +254,11 @@ router.post('/', optionalAuth, async (req, res) => {
           payment_intent: clientSecret ? {
             client_secret: clientSecret,
             payment_intent_id: paymentIntentId
-          } : null
+          } : null,
+          // Include error info if payment intent was requested but failed
+          ...(create_payment_intent && !clientSecret && stripeError ? {
+            payment_intent_error: stripeError
+          } : {})
         }
       });
     } catch (error) {

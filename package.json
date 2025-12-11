@@ -13,7 +13,9 @@
     "insert-blogs": "node insert-blogs-to-railway.js",
     "upload-blog-images": "node upload-blog-images.js",
     "setup-guest-orders": "node setup-guest-orders.js",
-    "migrate-all": "node setup-all-migrations.js"
+    "migrate-all": "node setup-all-migrations.js",
+    "add-updated-at": "node add-updated-at-column.js",
+    "clear-orders": "node clear-orders.js"
   },
   "keywords": [
     "express",

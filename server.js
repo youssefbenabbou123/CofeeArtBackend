@@ -14,8 +14,18 @@ import workshopsRouter from './routes/workshops.js';
 import adminWorkshopsRouter from './routes/admin/workshops.js';
 import adminClientsRouter from './routes/admin/clients.js';
 import adminGiftCardsRouter from './routes/admin/gift-cards.js';
+import stripeRouter from './routes/stripe.js';
 
 dotenv.config();
+
+// Log Stripe configuration status on startup
+if (process.env.STRIPE_SECRET_KEY) {
+  console.log('✅ Stripe Secret Key is configured');
+} else {
+  console.warn('⚠️  STRIPE_SECRET_KEY is not set. Payment functionality will be disabled.');
+  console.warn('   Please add STRIPE_SECRET_KEY to your .env file and restart the server.');
+}
+
 const app = express();
 const PORT = process.env.PORT || 3002;
 
@@ -43,7 +53,7 @@ const corsOptions = {
       // Allow requests with no origin (like Postman, mobile apps, or server-to-server)
       return callback(null, true);
     }
-    
+
     // Check if origin is in allowedOrigins
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin instanceof RegExp) {
@@ -51,12 +61,12 @@ const corsOptions = {
       }
       return allowedOrigin === origin;
     });
-    
+
     if (isAllowed) {
       console.log('✅ CORS allowed origin:', origin);
       return callback(null, true);
     }
-    
+
     console.log('❌ CORS blocked origin:', origin);
     return callback(new Error(`CORS policy: Origin ${origin} not allowed`));
   },
@@ -139,11 +149,12 @@ app.use('/api/workshops', workshopsRouter);
 app.use('/api/admin/workshops', adminWorkshopsRouter);
 app.use('/api/admin/clients', adminClientsRouter);
 app.use('/api/admin/gift-cards', adminGiftCardsRouter);
+app.use('/api/stripe', stripeRouter);
 
 // ---------------- ERROR HANDLING ---------------- //
 app.use((err, req, res, next) => {
   console.error('🔥 ERROR:', err.message);
-  
+
   if (err.message && err.message.includes('CORS')) {
     return res.status(403).json({
       success: false,
@@ -151,7 +162,7 @@ app.use((err, req, res, next) => {
       error: err.message
     });
   }
-  
+
   res.status(err.status || 500).json({
     success: false,
     message: 'Internal server error',
@@ -176,6 +187,16 @@ app.listen(PORT, () => {
   console.log(`🚀 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 Health check: http://localhost:${PORT}/`);
   console.log(`🚀 Database test: http://localhost:${PORT}/test-db`);
+  console.log(`🚀 Stripe config: http://localhost:${PORT}/api/stripe/check-config`);
   console.log('🚀 ========================================');
+  console.log('');
+  
+  // Final check of Stripe configuration
+  if (process.env.STRIPE_SECRET_KEY) {
+    console.log('✅ Stripe is configured and ready for payments');
+  } else {
+    console.log('⚠️  WARNING: Stripe is NOT configured');
+    console.log('   Add STRIPE_SECRET_KEY to your .env file to enable payments');
+  }
   console.log('');
 });

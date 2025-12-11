@@ -5,10 +5,36 @@ dotenv.config();
 
 // Initialize Stripe
 let stripe = null;
-if (process.env.STRIPE_SECRET_KEY) {
-  stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+let stripeInitError = null;
+
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+
+if (stripeKey) {
+  // Validate key format
+  if (!stripeKey.startsWith('sk_test_') && !stripeKey.startsWith('sk_live_')) {
+    stripeInitError = 'Invalid Stripe secret key format. Must start with sk_test_ or sk_live_';
+    console.error('❌ Stripe initialization failed:', stripeInitError);
+    console.error('   Current key prefix:', stripeKey.substring(0, 15) + '...');
+  } else {
+    try {
+      stripe = new Stripe(stripeKey);
+      console.log('✅ Stripe initialized successfully');
+      console.log('   Key type:', stripeKey.startsWith('sk_test_') ? 'TEST' : 'LIVE');
+      console.log('   Key prefix:', stripeKey.substring(0, 20) + '...');
+    } catch (error) {
+      stripeInitError = error.message;
+      console.error('❌ Error initializing Stripe:', error.message);
+      console.error('   Error type:', error.type || 'Unknown');
+      if (error.stack) {
+        console.error('   Stack trace:', error.stack);
+      }
+    }
+  }
 } else {
+  stripeInitError = 'STRIPE_SECRET_KEY not set';
   console.warn('⚠️  STRIPE_SECRET_KEY not set. Payment functionality will be disabled.');
+  console.warn('   Please add STRIPE_SECRET_KEY to your .env file and restart the server.');
+  console.warn('   For deployed services, add it to environment variables in your hosting platform.');
 }
 
 /**
@@ -20,7 +46,10 @@ if (process.env.STRIPE_SECRET_KEY) {
  */
 export async function createPaymentIntent(amount, currency = 'eur', metadata = {}) {
   if (!stripe) {
-    throw new Error('Stripe is not configured. Please set STRIPE_SECRET_KEY.');
+    const errorMsg = stripeInitError 
+      ? `Stripe is not configured: ${stripeInitError}` 
+      : 'Stripe is not configured. Please set STRIPE_SECRET_KEY.';
+    throw new Error(errorMsg);
   }
 
   try {
@@ -109,5 +138,6 @@ export async function verifyWebhook(payload, signature) {
   }
 }
 
-export { stripe };
+// Export stripe instance and initialization status
+export { stripe, stripeInitError };
 

@@ -148,18 +148,34 @@ router.put('/:id/status', async (req, res) => {
       });
     }
 
-    const validStatuses = ['pending', 'paid', 'preparing', 'shipped', 'delivered', 'cancelled', 'refunded'];
+    const validStatuses = ['confirmed', 'preparing', 'shipped', 'delivered', 'cancelled', 'refunded'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Statut invalide'
+        message: `Statut invalide. Statuts valides: ${validStatuses.join(', ')}`
       });
     }
 
-    const result = await pool.query(
-      'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-      [status, id]
-    );
+    // Check if updated_at column exists, if not, just update status
+    let result;
+    try {
+      // Try with updated_at first
+      result = await pool.query(
+        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [status, id]
+      );
+    } catch (err) {
+      // If updated_at doesn't exist, update without it
+      if (err.message && err.message.includes('updated_at')) {
+        console.log('updated_at column not found, updating without it');
+        result = await pool.query(
+          'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+          [status, id]
+        );
+      } else {
+        throw err;
+      }
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -168,6 +184,8 @@ router.put('/:id/status', async (req, res) => {
       });
     }
 
+    console.log(`✅ Order ${id} status updated to: ${status}`);
+
     res.json({
       success: true,
       message: 'Statut de la commande mis à jour',
@@ -175,6 +193,11 @@ router.put('/:id/status', async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating order status:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      detail: error.detail
+    });
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du statut',
@@ -308,7 +331,9 @@ router.get('/:id/invoice', async (req, res) => {
       items: itemsResult.rows,
       customerName: order.guest_name,
       customerEmail: order.guest_email,
-      tva_rate: 20 // Default TVA rate
+      payment_status: order.payment_status,
+      payment_method: order.payment_method,
+      stripe_payment_intent_id: order.stripe_payment_intent_id
     };
 
     // Generate PDF
