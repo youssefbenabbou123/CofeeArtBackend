@@ -44,7 +44,7 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des ateliers',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -88,7 +88,7 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de l\'atelier',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -122,7 +122,7 @@ router.post('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de l\'atelier',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -199,7 +199,7 @@ router.put('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour de l\'atelier',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -230,7 +230,31 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression de l\'atelier',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// GET /api/admin/workshops/:id/sessions - Get all sessions for a workshop
+router.get('/:id/sessions', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'SELECT * FROM workshop_sessions WHERE workshop_id = $1 ORDER BY session_date, session_time',
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error fetching sessions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des sessions',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -265,7 +289,57 @@ router.post('/:id/sessions', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la session',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// DELETE /api/admin/workshops/:id/sessions/:sessionId - Delete session
+router.delete('/:id/sessions/:sessionId', async (req, res) => {
+  try {
+    const { id, sessionId } = req.params;
+
+    // Check if session belongs to workshop
+    const sessionCheck = await pool.query(
+      'SELECT * FROM workshop_sessions WHERE id = $1 AND workshop_id = $2',
+      [sessionId, id]
+    );
+
+    if (sessionCheck.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Session non trouvée'
+      });
+    }
+
+    // Check if there are any bookings for this session
+    const bookingsCheck = await pool.query(
+      'SELECT COUNT(*) FROM reservations WHERE session_id = $1',
+      [sessionId]
+    );
+
+    if (parseInt(bookingsCheck.rows[0].count) > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Impossible de supprimer une session avec des réservations'
+      });
+    }
+
+    await pool.query(
+      'DELETE FROM workshop_sessions WHERE id = $1',
+      [sessionId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Session supprimée avec succès'
+    });
+  } catch (error) {
+    console.error('Error deleting session:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression de la session',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -323,7 +397,7 @@ router.get('/:id/bookings', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des réservations',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -408,7 +482,7 @@ router.post('/:id/bookings', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la réservation',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -500,7 +574,7 @@ router.put('/bookings/:id/cancel', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'annulation',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -545,7 +619,7 @@ router.get('/calendar/view', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération du calendrier',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

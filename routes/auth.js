@@ -3,11 +3,22 @@ import pool from '../db.js';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import { body, validationResult } from 'express-validator';
+import { authLimiter } from '../middleware/rateLimiter.js';
 
 dotenv.config();
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// JWT_SECRET must be set in production
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-secret-key-change-in-production');
+
+if (!JWT_SECRET) {
+  console.error('❌ CRITICAL: JWT_SECRET environment variable is not set!');
+  console.error('   The application cannot run securely without a JWT_SECRET.');
+  console.error('   Please set JWT_SECRET in your environment variables.');
+  process.exit(1);
+}
 
 // Helper function to generate JWT token
 function generateToken(userId, email, role) {
@@ -18,23 +29,88 @@ function generateToken(userId, email, role) {
   );
 }
 
-// POST /api/auth/signup - Register new user
-router.post('/signup', async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
+// Input validation middleware
+const validateSignup = [
+  body('name')
+    .trim()
+    .isLength({ min: 2, max: 100 })
+    .withMessage('Le nom doit contenir entre 2 et 100 caractères')
+    .escape(),
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Veuillez fournir une adresse email valide'),
+  body('password')
+    .isLength({ min: 12 })
+    .withMessage('Le mot de passe doit contenir au moins 12 caractères')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^()_+\-=\[\]{};':"\\|,.<>\/])/)
+    .withMessage('Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial'),
+];
 
-    // Validation
-    if (!name || !email || !password) {
+const validateSignin = [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Veuillez fournir une adresse email valide'),
+  body('password')
+    .notEmpty()
+    .withMessage('Le mot de passe est requis'),
+];
+
+// POST /api/auth/signup - Register new user
+router.post('/signup', authLimiter, validateSignup, async (req, res) => {
+  try {
+    // Check validation results
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Tous les champs sont requis'
+        message: 'Erreur de validation',
+        errors: errors.array()
       });
     }
 
-    if (password.length < 6) {
+    const { name, email, password } = req.body;
+
+    // Additional password validation (redundant but kept for clarity)
+    if (password.length < 12) {
       return res.status(400).json({
         success: false,
-        message: 'Le mot de passe doit contenir au moins 6 caractères'
+        message: 'Le mot de passe doit contenir au moins 12 caractères'
+      });
+    }
+
+    // Check password complexity
+    const hasUpperCase = /[A-Z]/.test(password);
+    const hasLowerCase = /[a-z]/.test(password);
+    const hasNumbers = /\d/.test(password);
+    const hasSpecialChar = /[@$!%*?&#^()_+\-=\[\]{};':"\\|,.<>\/]/.test(password);
+
+    if (!hasUpperCase || !hasLowerCase || !hasNumbers || !hasSpecialChar) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial'
+      });
+    }
+
+    // Enhanced password validation
+    if (password.length < 12) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le mot de passe doit contenir au moins 12 caractères'
+      });
+    }
+
+    // Check password complexity
+    const hasUpperCase = /[A-Z]/.test(password);
+    const hasLowerCase = /[a-z]/.test(password);
+    const hasNumbers = /\d/.test(password);
+    const hasSpecialChar = /[@$!%*?&#^()_+\-=\[\]{};':"\\|,.<>\/]/.test(password);
+
+    if (!hasUpperCase || !hasLowerCase || !hasNumbers || !hasSpecialChar) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial'
       });
     }
 
@@ -58,7 +134,7 @@ router.post('/signup', async (req, res) => {
     // Create user
     const result = await pool.query(
       'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, created_at',
-      [name, email.toLowerCase(), password_hash, 'client']
+      [name.trim(), email.toLowerCase().trim(), password_hash, 'client']
     );
 
     const user = result.rows[0];
@@ -84,28 +160,30 @@ router.post('/signup', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création du compte',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
 
 // POST /api/auth/signin - Login user
-router.post('/signin', async (req, res) => {
+router.post('/signin', authLimiter, validateSignin, async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    // Validation
-    if (!email || !password) {
+    // Check validation results
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Email et mot de passe requis'
+        message: 'Erreur de validation',
+        errors: errors.array()
       });
     }
+
+    const { email, password } = req.body;
 
     // Find user
     const result = await pool.query(
       'SELECT id, name, email, password_hash, role FROM users WHERE email = $1',
-      [email.toLowerCase()]
+      [email.toLowerCase().trim()]
     );
 
     if (result.rows.length === 0) {
@@ -148,7 +226,7 @@ router.post('/signin', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la connexion',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -197,7 +275,7 @@ router.get('/me', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la vérification',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

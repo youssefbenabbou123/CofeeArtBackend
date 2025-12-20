@@ -15,7 +15,11 @@
     "setup-guest-orders": "node setup-guest-orders.js",
     "migrate-all": "node setup-all-migrations.js",
     "add-updated-at": "node add-updated-at-column.js",
-    "clear-orders": "node clear-orders.js"
+    "clear-orders": "node clear-orders.js",
+    "add-workshops": "node scripts/add-sample-workshops.js",
+    "create-categories-table": "node scripts/create-product-categories-table.js",
+    "migrate-gift-cards": "node scripts/run-gift-cards-migration.js",
+    "add-test-goodies": "node scripts/add-test-goodies.js"
   },
   "keywords": [
     "express",

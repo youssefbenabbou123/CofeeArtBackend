@@ -48,7 +48,7 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching blogs',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -107,7 +107,7 @@ router.get('/:identifier', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching blog',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

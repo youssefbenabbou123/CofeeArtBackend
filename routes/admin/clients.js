@@ -83,7 +83,7 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des clients',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -159,7 +159,7 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération du client',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -200,7 +200,7 @@ router.get('/:id/orders', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des commandes',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -244,7 +244,7 @@ router.get('/:id/workshops', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des ateliers',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

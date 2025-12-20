@@ -114,6 +114,38 @@ export async function processRefund(paymentIntentId, amount = null, reason = 're
 }
 
 /**
+ * Create a Stripe Checkout Session
+ * @param {Array} lineItems - Array of line items for the checkout
+ * @param {string} successUrl - URL to redirect on success
+ * @param {string} cancelUrl - URL to redirect on cancel
+ * @param {Object} metadata - Additional metadata
+ * @returns {Promise<Object>} Checkout session
+ */
+export async function createCheckoutSession(lineItems, successUrl, cancelUrl, metadata = {}) {
+  if (!stripe) {
+    const errorMsg = stripeInitError 
+      ? `Stripe is not configured: ${stripeInitError}` 
+      : 'Stripe is not configured. Please set STRIPE_SECRET_KEY.';
+    throw new Error(errorMsg);
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: lineItems,
+      mode: 'payment',
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata: metadata,
+    });
+    return session;
+  } catch (error) {
+    console.error('Error creating checkout session:', error);
+    throw error;
+  }
+}
+
+/**
  * Verify webhook signature
  * @param {string} payload - Raw request body
  * @param {string} signature - Stripe signature header

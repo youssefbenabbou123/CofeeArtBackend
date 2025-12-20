@@ -1,0 +1,64 @@
+{
+  "tote_bags": [
+    {
+      "title": "Tote Bag Coffee Arts",
+      "description": "Tote bag en coton bio avec notre logo Coffee Arts. Parfait pour vos courses ou vos sorties. Dimensions: 40x42 cm. Lavable en machine.",
+      "price": 25.00,
+      "image": "/boutique/tote-bag-coffee-arts.jpg",
+      "category": "Tote bags",
+      "status": "active"
+    },
+    {
+      "title": "Tote Bag Céramique",
+      "description": "Tote bag élégant avec motif céramique. Matériau durable et écologique. Dimensions: 38x40 cm. Idéal pour transporter vos créations ou vos affaires.",
+      "price": 28.00,
+      "image": "/boutique/tote-bag-ceramique.jpg",
+      "category": "Tote bags",
+      "status": "active"
+    },
+    {
+      "title": "Tote Bag Minimaliste",
+      "description": "Tote bag sobre et minimaliste, parfait pour un usage quotidien. Coton épais et résistant. Dimensions: 35x38 cm.",
+      "price": 22.00,
+      "image": "/boutique/tote-bag-minimaliste.jpg",
+      "category": "Tote bags",
+      "status": "active"
+    }
+  ],
+  "affiches_prints": [
+    {
+      "title": "Affiche Coffee Arts",
+      "description": "Affiche design représentant notre univers café et céramique. Impression haute qualité sur papier premium. Format A3 (29.7 x 42 cm). Parfait pour décorer votre intérieur.",
+      "price": 35.00,
+      "image": "/boutique/affiche-coffee-arts.jpg",
+      "category": "Affiches / prints",
+      "status": "active"
+    },
+    {
+      "title": "Print Céramique Moderne",
+      "description": "Print artistique mettant en valeur l'art de la céramique. Design contemporain et élégant. Format A4 (21 x 29.7 cm). Encadrement non inclus.",
+      "price": 18.00,
+      "image": "/boutique/print-ceramique-moderne.jpg",
+      "category": "Affiches / prints",
+      "status": "active"
+    },
+    {
+      "title": "Affiche Café de Spécialité",
+      "description": "Affiche illustrée dédiée aux amateurs de café. Design vintage et chaleureux. Format A3 (29.7 x 42 cm). Impression sur papier mat premium.",
+      "price": 32.00,
+      "image": "/boutique/affiche-cafe-specialite.jpg",
+      "category": "Affiches / prints",
+      "status": "active"
+    },
+    {
+      "title": "Print Minimaliste",
+      "description": "Print minimaliste avec typographie élégante. Parfait pour un intérieur moderne. Format A4 (21 x 29.7 cm). Disponible en plusieurs couleurs.",
+      "price": 20.00,
+      "image": "/boutique/print-minimaliste.jpg",
+      "category": "Affiches / prints",
+      "status": "active"
+    }
+  ]
+}
+
+

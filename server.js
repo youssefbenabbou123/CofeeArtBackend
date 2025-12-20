@@ -1,7 +1,9 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import helmet from 'helmet';
 import pool, { testConnection } from './db.js';
+import { apiLimiter } from './middleware/rateLimiter.js';
 import productsRouter from './routes/products.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
@@ -14,7 +16,9 @@ import workshopsRouter from './routes/workshops.js';
 import adminWorkshopsRouter from './routes/admin/workshops.js';
 import adminClientsRouter from './routes/admin/clients.js';
 import adminGiftCardsRouter from './routes/admin/gift-cards.js';
+import giftCardsRouter from './routes/gift-cards.js';
 import stripeRouter from './routes/stripe.js';
+import stripeWebhookRouter from './routes/stripe-webhook.js';
 
 dotenv.config();
 
@@ -49,9 +53,13 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin, callback) => {
+    // In production, don't allow requests with no origin (security)
     if (!origin) {
-      // Allow requests with no origin (like Postman, mobile apps, or server-to-server)
-      return callback(null, true);
+      if (process.env.NODE_ENV === 'development') {
+        // Allow in development for testing tools like Postman
+        return callback(null, true);
+      }
+      return callback(new Error('CORS policy: Origin header required'));
     }
 
     // Check if origin is in allowedOrigins
@@ -63,11 +71,15 @@ const corsOptions = {
     });
 
     if (isAllowed) {
-      console.log('✅ CORS allowed origin:', origin);
+      if (process.env.NODE_ENV === 'development') {
+        console.log('✅ CORS allowed origin:', origin);
+      }
       return callback(null, true);
     }
 
-    console.log('❌ CORS blocked origin:', origin);
+    if (process.env.NODE_ENV === 'development') {
+      console.log('❌ CORS blocked origin:', origin);
+    }
     return callback(new Error(`CORS policy: Origin ${origin} not allowed`));
   },
   credentials: true,
@@ -76,6 +88,21 @@ const corsOptions = {
   exposedHeaders: ['Content-Range', 'X-Content-Range']
 };
 
+// ---------------- SECURITY MIDDLEWARE ---------------- //
+// Helmet for security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"], // Allow images from HTTPS sources
+      connectSrc: ["'self'", "https:"], // Allow API calls to HTTPS
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Disable for compatibility
+}));
+
 // Apply CORS middleware
 app.use(cors(corsOptions));
 
@@ -83,14 +110,20 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // Request logging middleware (helpful for debugging)
-app.use((req, res, next) => {
-  console.log(`➡ ${req.method} ${req.path} | Origin: ${req.headers.origin || 'none'}`);
-  next();
-});
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    console.log(`➡ ${req.method} ${req.path} | Origin: ${req.headers.origin || 'none'}`);
+    next();
+  });
+}
 
 // ---------------- MIDDLEWARE ---------------- //
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body parser with size limits to prevent DoS attacks
+app.use(express.json({ limit: '10mb' })); // Limit JSON payload size
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Limit URL-encoded payload size
+
+// Apply general rate limiting to all API routes
+app.use('/api/', apiLimiter);
 
 // ---------------- HEALTH CHECK & DATABASE TEST ---------------- //
 app.get('/', async (req, res) => {
@@ -149,7 +182,10 @@ app.use('/api/workshops', workshopsRouter);
 app.use('/api/admin/workshops', adminWorkshopsRouter);
 app.use('/api/admin/clients', adminClientsRouter);
 app.use('/api/admin/gift-cards', adminGiftCardsRouter);
+app.use('/api/gift-cards', giftCardsRouter);
 app.use('/api/stripe', stripeRouter);
+app.use('/api/stripe', stripeWebhookRouter);
+app.use('/api/stripe', stripeWebhookRouter);
 
 // ---------------- ERROR HANDLING ---------------- //
 app.use((err, req, res, next) => {

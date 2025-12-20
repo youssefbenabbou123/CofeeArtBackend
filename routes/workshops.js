@@ -50,7 +50,115 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching workshops',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// GET /api/workshops/reservations - Get user's reservations (MUST BE BEFORE /:id)
+router.get('/reservations', optionalAuth, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT 
+        r.id,
+        r.quantity,
+        r.status,
+        r.created_at,
+        r.waitlist_position,
+        w.id as workshop_id,
+        w.title as workshop_title,
+        w.description as workshop_description,
+        w.level,
+        w.duration,
+        w.price,
+        w.image as workshop_image,
+        ws.id as session_id,
+        ws.session_date,
+        ws.session_time
+       FROM reservations r
+       LEFT JOIN workshops w ON r.workshop_id = w.id
+       LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
+       WHERE r.user_id = $1 AND r.status != 'cancelled'
+       ORDER BY ws.session_date ASC, ws.session_time ASC`,
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows.map(reservation => ({
+        ...reservation,
+        price: parseFloat(reservation.price || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching reservations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des réservations',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// GET /api/workshops/reservations - Get user's reservations (MUST BE BEFORE /:id)
+router.get('/reservations', optionalAuth, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non authentifié'
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT 
+        r.id,
+        r.quantity,
+        r.status,
+        r.created_at,
+        r.waitlist_position,
+        w.id as workshop_id,
+        w.title as workshop_title,
+        w.description as workshop_description,
+        w.level,
+        w.duration,
+        w.price,
+        w.image as workshop_image,
+        ws.id as session_id,
+        ws.session_date,
+        ws.session_time
+       FROM reservations r
+       LEFT JOIN workshops w ON r.workshop_id = w.id
+       LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
+       WHERE r.user_id = $1 AND r.status != 'cancelled'
+       ORDER BY ws.session_date ASC, ws.session_time ASC`,
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows.map(reservation => ({
+        ...reservation,
+        price: parseFloat(reservation.price || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching reservations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des réservations',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -104,7 +212,7 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching workshop',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -114,7 +222,7 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.userId || null;
-    const { session_id, guest_name, guest_email, guest_phone, quantity = 1 } = req.body;
+    const { session_id, guest_name, guest_email, guest_phone, quantity = 1, create_payment_intent = true } = req.body;
 
     // Validate session_id
     if (!session_id) {
@@ -124,7 +232,16 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
       });
     }
 
-    // Get session
+    // Get workshop and session
+    const workshopResult = await pool.query('SELECT * FROM workshops WHERE id = $1', [id]);
+    if (workshopResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Workshop not found'
+      });
+    }
+    const workshop = workshopResult.rows[0];
+
     const sessionResult = await pool.query(
       'SELECT * FROM workshop_sessions WHERE id = $1 AND workshop_id = $2',
       [session_id, id]
@@ -176,63 +293,135 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
       });
     }
 
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
+    // Calculate total price
+    const totalPrice = parseFloat(workshop.price || 0) * quantity;
 
-      // Create reservation
-      const reservationResult = await client.query(
-        `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
-         VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7)
-         RETURNING *`,
-        [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null]
-      );
+    // If payment is required, create reservation with "pending" status first, then create Stripe Checkout Session
+    if (create_payment_intent && totalPrice > 0) {
+      const client = await pool.connect();
+      
+      try {
+        await client.query('BEGIN');
 
-      // Update session booked count
-      await client.query(
-        'UPDATE workshop_sessions SET booked_count = booked_count + $1 WHERE id = $2',
-        [quantity, session_id]
-      );
+        // Create reservation with "pending" status (will be confirmed after payment)
+        const reservationResult = await client.query(
+          `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
+           VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
+           RETURNING *`,
+          [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null]
+        );
 
-      await client.query('COMMIT');
+        const reservation = reservationResult.rows[0];
 
-      const reservation = reservationResult.rows[0];
+        // Create Stripe Checkout Session
+        const { createCheckoutSession } = await import('../services/stripe.js');
+        
+        const lineItems = [{
+          price_data: {
+            currency: 'eur',
+            product_data: {
+              name: `${workshop.title} - ${quantity} place${quantity > 1 ? 's' : ''}`,
+              description: `Réservation pour la session du ${new Date(session.session_date).toLocaleDateString('fr-FR')} à ${session.session_time}`,
+            },
+            unit_amount: Math.round(totalPrice * 100), // Price in cents
+          },
+          quantity: 1,
+        }];
 
-      // Get workshop details for email
-      const workshopResult = await client.query('SELECT * FROM workshops WHERE id = $1', [id]);
-      const workshop = workshopResult.rows[0];
+        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers/${id}?success=true&session_id=${session_id}`;
+        const cancelUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers/${id}?cancelled=true`;
 
-      // Send confirmation email
-      const email = userId ? null : guest_email; // Get user email if logged in
-      if (email) {
-        await sendWorkshopConfirmation(email, {
-          participantName: guest_name || 'Participant',
-          workshopTitle: workshop.title,
-          sessionDate: session.session_date,
-          sessionTime: session.session_time,
-          duration: workshop.duration,
-          level: workshop.level
+        const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
+          type: 'workshop_booking',
+          reservation_id: reservation.id.toString(),
+          workshop_id: id,
+          session_id: session_id,
+          quantity: quantity.toString(),
+          user_id: userId || 'guest',
+          guest_name: guest_name || null,
+          guest_email: guest_email || null,
+          guest_phone: guest_phone || null,
         });
-      }
 
-      res.status(201).json({
-        success: true,
-        message: 'Réservation confirmée',
-        data: reservation
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+        if (stripeSession && stripeSession.url) {
+          await client.query('COMMIT');
+          return res.status(200).json({
+            success: true,
+            message: 'Redirection vers le paiement...',
+            data: {
+              checkout_url: stripeSession.url,
+              checkout_session_id: stripeSession.id
+            }
+          });
+        } else {
+          throw new Error('Stripe session creation failed: no URL returned');
+        }
+      } catch (stripeError) {
+        await client.query('ROLLBACK');
+        console.error('Error creating Stripe checkout session:', stripeError);
+        return res.status(500).json({
+          success: false,
+          message: `Erreur lors de la création de la session de paiement: ${stripeError.message}`
+        });
+      } finally {
+        client.release();
+      }
+    } else {
+      // No payment required - create reservation directly
+      const client = await pool.connect();
+      
+      try {
+        await client.query('BEGIN');
+
+        // Create reservation
+        const reservationResult = await client.query(
+          `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
+           VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7)
+           RETURNING *`,
+          [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null]
+        );
+
+        // Update session booked count
+        await client.query(
+          'UPDATE workshop_sessions SET booked_count = booked_count + $1 WHERE id = $2',
+          [quantity, session_id]
+        );
+
+        await client.query('COMMIT');
+
+        const reservation = reservationResult.rows[0];
+
+        // Send confirmation email
+        const email = userId ? null : guest_email;
+        if (email) {
+          await sendWorkshopConfirmation(email, {
+            participantName: guest_name || 'Participant',
+            workshopTitle: workshop.title,
+            sessionDate: session.session_date,
+            sessionTime: session.session_time,
+            duration: workshop.duration,
+            level: workshop.level
+          });
+        }
+
+        res.status(201).json({
+          success: true,
+          message: 'Réservation confirmée',
+          data: reservation
+        });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
     }
   } catch (error) {
     console.error('Error booking workshop:', error);
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la réservation',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

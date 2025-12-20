@@ -78,7 +78,7 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des commandes',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -130,7 +130,7 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de la commande',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -201,7 +201,7 @@ router.put('/:id/status', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du statut',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -287,7 +287,7 @@ router.put('/:id/refund', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors du remboursement',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -347,7 +347,7 @@ router.get('/:id/invoice', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la génération de la facture',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -420,7 +420,7 @@ router.get('/export/csv', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'export',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

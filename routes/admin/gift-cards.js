@@ -24,6 +24,14 @@ router.get('/', async (req, res) => {
   try {
     const { status, search } = req.query;
 
+    // Check if new columns exist
+    const columnCheck = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'gift_cards' AND column_name = 'used'
+    `);
+    const hasNewColumns = columnCheck.rows.length > 0;
+
     let query = 'SELECT * FROM gift_cards WHERE 1=1';
     const params = [];
     let paramCount = 1;
@@ -42,20 +50,49 @@ router.get('/', async (req, res) => {
 
     const result = await pool.query(query, params);
 
+    // Check for expired cards (only if new columns exist)
+    if (hasNewColumns) {
+      try {
+        await pool.query(`
+          UPDATE gift_cards
+          SET status = 'expired', used = true
+          WHERE expiry_date < CURRENT_DATE
+            AND status = 'active'
+            AND used = false
+        `);
+      } catch (error) {
+        console.warn('Could not update expired cards:', error.message);
+      }
+    }
+
     res.json({
       success: true,
-      data: result.rows.map(card => ({
-        ...card,
-        amount: parseFloat(card.amount || 0),
-        balance: parseFloat(card.balance || 0)
-      }))
+      data: result.rows.map(card => {
+        const expiryDate = card.expiry_date ? new Date(card.expiry_date) : null;
+        const isExpired = expiryDate && expiryDate < new Date();
+        
+        // Handle both old and new schema
+        const cardUsed = hasNewColumns ? (card.used || false) : false;
+        const cardStatus = isExpired ? 'expired' : (hasNewColumns && cardUsed ? 'used' : card.status || 'active');
+        
+        return {
+          ...card,
+          amount: parseFloat(card.amount || 0),
+          balance: parseFloat(card.balance || 0),
+          status: cardStatus,
+          used: cardUsed,
+          category: hasNewColumns ? (card.category || null) : null,
+          purchaser_email: hasNewColumns ? (card.purchaser_email || null) : null,
+          purchaser_name: hasNewColumns ? (card.purchaser_name || null) : null
+        };
+      })
     });
   } catch (error) {
     console.error('Error fetching gift cards:', error);
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des cartes cadeaux',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -104,7 +141,7 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de la carte cadeau',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -162,7 +199,7 @@ router.post('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la carte cadeau',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -228,7 +265,7 @@ router.put('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour de la carte cadeau',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -259,7 +296,7 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression de la carte cadeau',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -314,7 +351,7 @@ router.get('/check/:code', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la vérification de la carte cadeau',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

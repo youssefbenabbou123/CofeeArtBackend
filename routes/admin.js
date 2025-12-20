@@ -10,10 +10,12 @@ router.use((req, res, next) => {
   next();
 });
 
-// Test route (no auth required for debugging)
-router.get('/test', (req, res) => {
-  res.json({ success: true, message: 'Admin routes are working!' });
-});
+// Test route (development only - removed in production for security)
+if (process.env.NODE_ENV === 'development') {
+  router.get('/test', (req, res) => {
+    res.json({ success: true, message: 'Admin routes are working!' });
+  });
+}
 
 // All admin routes require authentication and admin role
 router.use(verifyToken);
@@ -37,7 +39,7 @@ router.get('/users', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des utilisateurs',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -77,7 +79,7 @@ router.put('/users/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour de l\'utilisateur',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -116,7 +118,7 @@ router.delete('/users/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression de l\'utilisateur',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -183,7 +185,7 @@ router.get('/products', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des produits',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -256,7 +258,7 @@ router.post('/products', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création du produit',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -360,7 +362,7 @@ router.put('/products/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du produit',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -391,7 +393,154 @@ router.delete('/products/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression du produit',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// ========== PRODUCT CATEGORIES ==========
+
+// GET /api/admin/categories - Get all product categories
+router.get('/categories', async (req, res) => {
+  try {
+    // Check if table exists, if not return default categories
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'product_categories'
+      );
+    `);
+
+    if (!tableCheck.rows[0].exists) {
+      // Return default categories if table doesn't exist
+      const defaultCategories = [
+        { id: '1', name: 'Tasses', created_at: new Date().toISOString() },
+        { id: '2', name: 'Assiettes', created_at: new Date().toISOString() },
+        { id: '3', name: 'Pièces uniques', created_at: new Date().toISOString() },
+        { id: '4', name: 'Collections spéciales', created_at: new Date().toISOString() },
+        { id: '5', name: 'Tote bags', created_at: new Date().toISOString() },
+        { id: '6', name: 'Affiches / prints', created_at: new Date().toISOString() },
+      ];
+      return res.json({
+        success: true,
+        data: defaultCategories
+      });
+    }
+
+    const result = await pool.query(
+      'SELECT * FROM product_categories ORDER BY name ASC'
+    );
+
+    // If no categories in DB, return default ones
+    if (result.rows.length === 0) {
+      const defaultCategories = [
+        { id: '1', name: 'Tasses', created_at: new Date().toISOString() },
+        { id: '2', name: 'Assiettes', created_at: new Date().toISOString() },
+        { id: '3', name: 'Pièces uniques', created_at: new Date().toISOString() },
+        { id: '4', name: 'Collections spéciales', created_at: new Date().toISOString() },
+        { id: '5', name: 'Tote bags', created_at: new Date().toISOString() },
+        { id: '6', name: 'Affiches / prints', created_at: new Date().toISOString() },
+      ];
+      return res.json({
+        success: true,
+        data: defaultCategories
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error fetching categories:', error);
+    // If error is about table not existing, return default categories
+    if (error.message.includes('does not exist') || error.code === '42P01') {
+      const defaultCategories = [
+        { id: '1', name: 'Tasses', created_at: new Date().toISOString() },
+        { id: '2', name: 'Assiettes', created_at: new Date().toISOString() },
+        { id: '3', name: 'Pièces uniques', created_at: new Date().toISOString() },
+        { id: '4', name: 'Collections spéciales', created_at: new Date().toISOString() },
+        { id: '5', name: 'Tote bags', created_at: new Date().toISOString() },
+        { id: '6', name: 'Affiches / prints', created_at: new Date().toISOString() },
+      ];
+      return res.json({
+        success: true,
+        data: defaultCategories
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des catégories',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// POST /api/admin/categories - Create new category
+router.post('/categories', async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Le nom de la catégorie est requis'
+      });
+    }
+
+    const result = await pool.query(
+      'INSERT INTO product_categories (name) VALUES ($1) RETURNING *',
+      [name.trim()]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Catégorie créée avec succès',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    if (error.code === '23505') { // Unique violation
+      return res.status(400).json({
+        success: false,
+        message: 'Cette catégorie existe déjà'
+      });
+    }
+    console.error('Error creating category:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la création de la catégorie',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// DELETE /api/admin/categories/:id - Delete category
+router.delete('/categories/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      'DELETE FROM product_categories WHERE id = $1 RETURNING id',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Catégorie non trouvée'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Catégorie supprimée'
+    });
+  } catch (error) {
+    console.error('Error deleting category:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression de la catégorie',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -424,7 +573,7 @@ router.put('/products/:id/archive', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'archivage',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -451,7 +600,7 @@ router.get('/products/:id/variants', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des variantes',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -479,7 +628,7 @@ router.post('/products/:id/variants', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la variante',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -544,7 +693,7 @@ router.put('/products/variants/:variantId', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour de la variante',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -575,7 +724,7 @@ router.delete('/products/variants/:variantId', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression de la variante',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -596,7 +745,7 @@ router.get('/products/collections', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des collections',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -636,7 +785,7 @@ router.post('/products/collections', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la collection',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -693,7 +842,7 @@ router.put('/products/collections/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour de la collection',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -724,7 +873,7 @@ router.delete('/products/collections/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression de la collection',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -812,7 +961,7 @@ router.post('/products/:id/stock', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du stock',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -848,7 +997,7 @@ router.get('/products/:id/stock-history', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de l\'historique',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -912,7 +1061,7 @@ router.get('/products/export', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'export',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -954,7 +1103,7 @@ router.get('/messages', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des messages',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -994,7 +1143,7 @@ router.put('/messages/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du message',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1025,7 +1174,7 @@ router.delete('/messages/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression du message',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1203,7 +1352,7 @@ router.get('/stats', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des statistiques',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1231,7 +1380,7 @@ router.get('/settings', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des paramètres',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1269,7 +1418,7 @@ router.put('/settings', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour des paramètres',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1292,7 +1441,7 @@ router.get('/blogs', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des blogs',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1322,7 +1471,7 @@ router.get('/blogs/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération du blog',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1374,7 +1523,7 @@ router.post('/blogs', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création du blog',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1466,7 +1615,7 @@ router.put('/blogs/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la mise à jour du blog',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -1497,7 +1646,7 @@ router.delete('/blogs/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression du blog',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

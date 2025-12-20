@@ -272,7 +272,7 @@ router.post('/', optionalAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la création de la commande',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -313,7 +313,7 @@ router.get('/', optionalAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération des commandes',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -339,12 +339,26 @@ router.get('/:id', optionalAuth, async (req, res) => {
 
     const order = orderResult.rows[0];
 
-    // Check if user has access (either is the owner or is admin)
-    if (order.user_id && order.user_id !== userId && req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Accès non autorisé'
-      });
+    // Check if user has access
+    // For authenticated users: must be the owner or admin
+    // For guest orders: require email verification (in future, implement secure token system)
+    if (order.user_id) {
+      // Authenticated user order - check ownership
+      if (order.user_id !== userId && req.user?.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé'
+        });
+      }
+    } else {
+      // Guest order - only allow if user is admin, or implement email verification
+      // For now, only admins can view guest orders for security
+      if (req.user?.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé. Les commandes invitées nécessitent une vérification.'
+        });
+      }
     }
 
     // Get order items
@@ -374,7 +388,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de la commande',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

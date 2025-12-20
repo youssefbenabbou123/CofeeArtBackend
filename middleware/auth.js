@@ -3,7 +3,16 @@ import dotenv from 'dotenv';
 import pool from '../db.js';
 
 dotenv.config();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// JWT_SECRET must be set in production
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-secret-key-change-in-production');
+
+if (!JWT_SECRET) {
+  console.error('❌ CRITICAL: JWT_SECRET environment variable is not set!');
+  console.error('   The application cannot run securely without a JWT_SECRET.');
+  console.error('   Please set JWT_SECRET in your environment variables.');
+  process.exit(1);
+}
 
 // Middleware to verify JWT token
 export function verifyToken(req, res, next) {
