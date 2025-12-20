@@ -93,27 +93,6 @@ router.post('/signup', authLimiter, validateSignup, async (req, res) => {
       });
     }
 
-    // Enhanced password validation
-    if (password.length < 12) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le mot de passe doit contenir au moins 12 caractères'
-      });
-    }
-
-    // Check password complexity
-    const hasUpperCase = /[A-Z]/.test(password);
-    const hasLowerCase = /[a-z]/.test(password);
-    const hasNumbers = /\d/.test(password);
-    const hasSpecialChar = /[@$!%*?&#^()_+\-=\[\]{};':"\\|,.<>\/]/.test(password);
-
-    if (!hasUpperCase || !hasLowerCase || !hasNumbers || !hasSpecialChar) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial'
-      });
-    }
-
     // Check if user already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE email = $1',
