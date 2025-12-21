@@ -313,6 +313,14 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
 
         const reservation = reservationResult.rows[0];
 
+        // Block the slot immediately by incrementing booked_count (so it's grayed out for others)
+        await client.query(
+          `UPDATE workshop_sessions 
+           SET booked_count = booked_count + $1 
+           WHERE id = $2`,
+          [quantity, session_id]
+        );
+
         // Create Stripe Checkout Session
         const { createCheckoutSession } = await import('../services/stripe.js');
         

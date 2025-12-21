@@ -75,13 +75,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
             );
 
             if (reservation.rows.length > 0) {
-              // Update session booked count
-              await client.query(
-                `UPDATE workshop_sessions 
-                 SET booked_count = booked_count + $1 
-                 WHERE id = $2`,
-                [reservation.rows[0].quantity, reservation.rows[0].session_id]
-              );
+              // booked_count was already incremented when reservation was created
+              // Just confirm the reservation status (booked_count already updated)
 
               // Get workshop and session details for email
               const workshopResult = await client.query(

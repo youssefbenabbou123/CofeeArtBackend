@@ -9,6 +9,46 @@ const router = express.Router();
 router.use(verifyToken);
 router.use(requireAdmin);
 
+// DELETE /api/admin/workshops/all - Delete all workshops (admin only)
+router.delete('/all', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // Delete reservations first (foreign key constraint)
+    const reservationsResult = await client.query('DELETE FROM reservations RETURNING id');
+    
+    // Delete workshop sessions
+    const sessionsResult = await client.query('DELETE FROM workshop_sessions RETURNING id');
+    
+    // Delete workshops
+    const workshopsResult = await client.query('DELETE FROM workshops RETURNING id');
+    
+    await client.query('COMMIT');
+    
+    res.json({
+      success: true,
+      message: 'Tous les ateliers ont été supprimés',
+      data: {
+        workshopsDeleted: workshopsResult.rowCount,
+        sessionsDeleted: sessionsResult.rowCount,
+        reservationsDeleted: reservationsResult.rowCount
+      }
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting all workshops:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression des ateliers',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // GET /api/admin/workshops - List all workshops
 router.get('/', async (req, res) => {
   try {
