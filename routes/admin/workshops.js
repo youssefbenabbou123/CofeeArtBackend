@@ -76,35 +76,24 @@ router.get('/:id/reservations', async (req, res) => {
         r.user_id,
         r.quantity,
         r.status,
+        r.waitlist_position,
         r.guest_name,
         r.guest_email,
         r.guest_phone,
         r.created_at,
         r.cancelled_at,
         r.cancellation_reason,
-        r.waitlist_position,
+        u.name as user_name,
+        u.email as user_email,
         ws.session_date,
         ws.session_time,
         ws.capacity as session_capacity,
-        ws.booked_count,
-        u.name as user_name,
-        u.email as user_email,
-        u.phone as user_phone
+        ws.booked_count
       FROM reservations r
-      LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
       LEFT JOIN users u ON r.user_id = u.id
+      LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
       WHERE r.workshop_id = $1
-      ORDER BY 
-        CASE 
-          WHEN r.status = 'confirmed' THEN 1
-          WHEN r.status = 'pending' THEN 2
-          WHEN r.status = 'waitlist' THEN 3
-          WHEN r.status = 'cancelled' THEN 4
-          ELSE 5
-        END,
-        ws.session_date ASC NULLS LAST,
-        ws.session_time ASC NULLS LAST,
-        r.created_at ASC`,
+      ORDER BY r.created_at DESC`,
       [id]
     );
 
