@@ -328,31 +328,45 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
           quantity: 1,
         }];
 
-        // Get frontend URL from request origin, environment variable, or use origin from referer
+        // Get frontend URL - prioritize environment variable, then try to extract from request
         const getFrontendUrl = () => {
-          // Try origin header first
+          // First priority: Environment variable (most reliable)
+          if (process.env.FRONTEND_URL) {
+            return process.env.FRONTEND_URL;
+          }
+          
+          // Second priority: Try to extract from request headers
           const origin = req.headers.origin || req.headers.referer;
           if (origin) {
             try {
               const url = new URL(origin);
-              return url.origin;
+              const extractedOrigin = url.origin;
+              // Only use if it's not localhost (we're in production)
+              if (!extractedOrigin.includes('localhost') && !extractedOrigin.includes('127.0.0.1')) {
+                return extractedOrigin;
+              }
             } catch (e) {
               // Invalid URL, continue to next option
             }
           }
-          // Fall back to environment variable
-          if (process.env.FRONTEND_URL) {
-            return process.env.FRONTEND_URL;
-          }
-          // Last resort: localhost only for development
-          if (process.env.NODE_ENV === 'development') {
+          
+          // Check if we're actually running locally (backend is on localhost)
+          const isLocalBackend = !process.env.RAILWAY_ENVIRONMENT && 
+                                  !process.env.VERCEL && 
+                                  (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV);
+          
+          // Only use localhost if backend is definitely running locally
+          if (isLocalBackend) {
             return 'http://localhost:3000';
           }
-          // Production fallback - should not reach here if properly configured
-          throw new Error('FRONTEND_URL not configured. Please set FRONTEND_URL environment variable.');
+          
+          // Production: require FRONTEND_URL to be set
+          console.error('❌ FRONTEND_URL not configured. Cannot determine frontend URL for redirect.');
+          throw new Error('FRONTEND_URL environment variable must be set in production. Please configure it in your deployment platform.');
         };
         
         const frontendUrl = getFrontendUrl();
+        console.log(`🔗 Using frontend URL for redirect: ${frontendUrl}`);
         const successUrl = `${frontendUrl}/ateliers?success=true`;
         const cancelUrl = `${frontendUrl}/ateliers?cancelled=true`;
 
