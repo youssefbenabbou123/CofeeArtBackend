@@ -328,7 +328,7 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
           quantity: 1,
         }];
 
-        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers?success=true&session_id=${session_id}`;
+        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers?success=true`;
         const cancelUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers?cancelled=true`;
 
         const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
