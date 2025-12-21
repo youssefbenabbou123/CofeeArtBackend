@@ -142,8 +142,33 @@ router.post('/purchase', optionalAuth, async (req, res) => {
             quantity: 1,
           }];
 
-          const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/cartes-cadeaux?success=true&code=${code}`;
-          const cancelUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/cartes-cadeaux?cancelled=true`;
+          // Get frontend URL from request origin, environment variable, or use origin from referer
+          const getFrontendUrl = () => {
+            // Try origin header first
+            const origin = req.headers.origin || req.headers.referer;
+            if (origin) {
+              try {
+                const url = new URL(origin);
+                return url.origin;
+              } catch (e) {
+                // Invalid URL, continue to next option
+              }
+            }
+            // Fall back to environment variable
+            if (process.env.FRONTEND_URL) {
+              return process.env.FRONTEND_URL;
+            }
+            // Last resort: localhost only for development
+            if (process.env.NODE_ENV === 'development') {
+              return 'http://localhost:3000';
+            }
+            // Production fallback - should not reach here if properly configured
+            throw new Error('FRONTEND_URL not configured. Please set FRONTEND_URL environment variable.');
+          };
+          
+          const frontendUrl = getFrontendUrl();
+          const successUrl = `${frontendUrl}/cartes-cadeaux?success=true&code=${code}`;
+          const cancelUrl = `${frontendUrl}/cartes-cadeaux?cancelled=true`;
 
           const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
             gift_card_id: giftCard.id,
