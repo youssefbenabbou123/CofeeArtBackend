@@ -487,6 +487,87 @@ router.post('/:id/bookings', async (req, res) => {
   }
 });
 
+// GET /api/admin/workshops/:id/reservations - Get all reservations for a workshop
+router.get('/:id/reservations', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify workshop exists
+    const workshopCheck = await pool.query(
+      'SELECT id, title FROM workshops WHERE id = $1',
+      [id]
+    );
+
+    if (workshopCheck.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Atelier non trouvé'
+      });
+    }
+
+    // Get all reservations for this workshop with user/client info and session details
+    const result = await pool.query(
+      `SELECT 
+        r.id,
+        r.workshop_id,
+        r.session_id,
+        r.user_id,
+        r.quantity,
+        r.status,
+        r.guest_name,
+        r.guest_email,
+        r.guest_phone,
+        r.created_at,
+        r.cancelled_at,
+        r.cancellation_reason,
+        r.waitlist_position,
+        ws.session_date,
+        ws.session_time,
+        ws.capacity as session_capacity,
+        COALESCE(
+          (SELECT COUNT(*) FROM reservations r2 
+           WHERE r2.session_id = r.session_id AND r2.status = 'confirmed'),
+          0
+        ) as booked_count,
+        u.name as user_name,
+        u.email as user_email,
+        u.phone as user_phone
+      FROM reservations r
+      LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
+      LEFT JOIN users u ON r.user_id = u.id
+      WHERE r.workshop_id = $1
+      ORDER BY 
+        CASE r.status
+          WHEN 'confirmed' THEN 1
+          WHEN 'pending' THEN 2
+          WHEN 'waitlist' THEN 3
+          WHEN 'cancelled' THEN 4
+          ELSE 5
+        END,
+        ws.session_date ASC,
+        ws.session_time ASC,
+        r.created_at ASC`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows.map(reservation => ({
+        ...reservation,
+        quantity: parseInt(reservation.quantity),
+        waitlist_position: reservation.waitlist_position ? parseInt(reservation.waitlist_position) : null
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching workshop reservations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des réservations',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
 // PUT /api/admin/workshops/bookings/:id/cancel - Cancel booking
 router.put('/bookings/:id/cancel', async (req, res) => {
   try {
