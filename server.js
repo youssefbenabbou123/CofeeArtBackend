@@ -53,13 +53,10 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // In production, don't allow requests with no origin (security)
+    // Allow requests with no origin (direct browser requests, health checks, etc.)
+    // This is safe because browsers don't send credentials with no-origin requests
     if (!origin) {
-      if (process.env.NODE_ENV === 'development') {
-        // Allow in development for testing tools like Postman
-        return callback(null, true);
-      }
-      return callback(new Error('CORS policy: Origin header required'));
+      return callback(null, true);
     }
 
     // Check if origin is in allowedOrigins

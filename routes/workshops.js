@@ -328,8 +328,8 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
           quantity: 1,
         }];
 
-        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers/${id}?success=true&session_id=${session_id}`;
-        const cancelUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers/${id}?cancelled=true`;
+        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers?success=true&session_id=${session_id}`;
+        const cancelUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/ateliers?cancelled=true`;
 
         const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
           type: 'workshop_booking',
