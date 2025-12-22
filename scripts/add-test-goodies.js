@@ -61,7 +61,7 @@ async function addTestGoodies() {
         status: 'active'
       },
       {
-        title: 'Affiche Café de Spécialité',
+        title: 'Affiche Café de spécialité',
         description: 'Affiche illustrée dédiée aux amateurs de café. Design vintage et chaleureux. Format A3 (29.7 x 42 cm). Impression sur papier mat premium.',
         price: 32.00,
         image: '/boutique/affiche-cafe-specialite.jpg',
@@ -125,7 +125,7 @@ async function addTestGoodies() {
     console.log('   Affiches / prints:');
     console.log('     - Affiche Coffee Arts (35€)');
     console.log('     - Print Céramique Moderne (18€)');
-    console.log('     - Affiche Café de Spécialité (32€)');
+    console.log('     - Affiche Café de spécialité (32€)');
     console.log('     - Print Minimaliste (20€)');
     
     await pool.end();

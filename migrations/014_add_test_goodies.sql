@@ -66,10 +66,10 @@ BEGIN
     );
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM products WHERE title = 'Affiche Café de Spécialité') THEN
+  IF NOT EXISTS (SELECT 1 FROM products WHERE title = 'Affiche Café de spécialité') THEN
     INSERT INTO products (title, description, price, image, category, status)
     VALUES (
-      'Affiche Café de Spécialité',
+      'Affiche Café de spécialité',
       'Affiche illustrée dédiée aux amateurs de café. Design vintage et chaleureux. Format A3 (29.7 x 42 cm). Impression sur papier mat premium.',
       32.00,
       '/boutique/affiche-cafe-specialite.jpg',

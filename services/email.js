@@ -103,7 +103,7 @@ const templates = {
               <h3>${workshopData.workshopTitle}</h3>
               <p><strong>Date:</strong> ${new Date(workshopData.sessionDate).toLocaleDateString('fr-FR')}</p>
               <p><strong>Heure:</strong> ${workshopData.sessionTime}</p>
-              <p><strong>Durée:</strong> ${workshopData.duration} minutes</p>
+              <p><strong>Durée :</strong> ${workshopData.duration} minutes</p>
               <p><strong>Niveau:</strong> ${workshopData.level}</p>
             </div>
             <p>Nous avons hâte de vous accueillir !</p>
@@ -126,7 +126,7 @@ const templates = {
       ${workshopData.workshopTitle}
       Date: ${new Date(workshopData.sessionDate).toLocaleDateString('fr-FR')}
       Heure: ${workshopData.sessionTime}
-      Durée: ${workshopData.duration} minutes
+      Durée : ${workshopData.duration} minutes
       Niveau: ${workshopData.level}
       
       Nous avons hâte de vous accueillir !

@@ -19,7 +19,8 @@
     "add-workshops": "node scripts/add-sample-workshops.js",
     "create-categories-table": "node scripts/create-product-categories-table.js",
     "migrate-gift-cards": "node scripts/run-gift-cards-migration.js",
-    "add-test-goodies": "node scripts/add-test-goodies.js"
+    "add-test-goodies": "node scripts/add-test-goodies.js",
+    "add-eighth-ceramic": "node scripts/add-eighth-ceramic.js"
   },
   "keywords": [
     "express",
