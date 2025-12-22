@@ -130,7 +130,7 @@ router.get('/products', async (req, res) => {
   try {
     const { category, status, collection, archived, low_stock } = req.query;
     let query = `SELECT 
-      id, title, description, price, price_ht, tva_rate, image, category, collection, 
+      id, title, description, price, price_ht, tva_rate, image, images, features, category, collection, 
       status, stock, stock_alert_threshold, archived, created_at 
       FROM products WHERE 1=1`;
     const params = [];
@@ -167,14 +167,33 @@ router.get('/products', async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    const products = result.rows.map(product => ({
-      ...product,
-      price: parseFloat(product.price || 0),
-      price_ht: product.price_ht ? parseFloat(product.price_ht) : null,
-      tva_rate: product.tva_rate ? parseFloat(product.tva_rate) : 20,
-      stock: parseInt(product.stock || 0),
-      stock_alert_threshold: parseInt(product.stock_alert_threshold || 10)
-    }));
+    const products = result.rows.map(product => {
+      // Get images array, fallback to single image, then to empty array
+      let images = [];
+      if (product.images && Array.isArray(product.images) && product.images.length > 0) {
+        images = product.images;
+      } else if (product.image) {
+        images = [product.image];
+      }
+      
+      // Get features array
+      let features = [];
+      if (product.features && Array.isArray(product.features) && product.features.length > 0) {
+        features = product.features;
+      }
+      
+      return {
+        ...product,
+        price: parseFloat(product.price || 0),
+        price_ht: product.price_ht ? parseFloat(product.price_ht) : null,
+        tva_rate: product.tva_rate ? parseFloat(product.tva_rate) : 20,
+        stock: parseInt(product.stock || 0),
+        stock_alert_threshold: parseInt(product.stock_alert_threshold || 10),
+        images: images,
+        image: images[0] || product.image || null, // Keep image for backward compatibility
+        features: features
+      };
+    });
 
     res.json({
       success: true,
@@ -218,11 +237,25 @@ router.post('/products', async (req, res) => {
       finalPriceHt = price / (1 + finalTvaRate / 100);
     }
 
+    // Handle images array
+    let imagesArray = [];
+    if (req.body.images && Array.isArray(req.body.images) && req.body.images.length > 0) {
+      imagesArray = req.body.images;
+    } else if (image) {
+      imagesArray = [image];
+    }
+    const firstImage = imagesArray.length > 0 ? imagesArray[0] : image || null;
+
+    // Handle features array
+    const featuresArray = req.body.features && Array.isArray(req.body.features) && req.body.features.length > 0
+      ? req.body.features.filter((f) => f && f.trim() !== '') // Filter out empty features
+      : [];
+
     const result = await pool.query(
       `INSERT INTO products (
-        title, description, price, price_ht, tva_rate, image, category, collection,
+        title, description, price, price_ht, tva_rate, image, images, features, category, collection,
         status, stock, stock_alert_threshold, archived
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14) 
       RETURNING *`,
       [
         title, 
@@ -230,7 +263,9 @@ router.post('/products', async (req, res) => {
         finalPrice, 
         finalPriceHt || null, 
         finalTvaRate,
-        image || null, 
+        firstImage, 
+        JSON.stringify(imagesArray),
+        JSON.stringify(featuresArray),
         category || null, 
         collection || null,
         status || 'active',
@@ -240,12 +275,31 @@ router.post('/products', async (req, res) => {
       ]
     );
 
+    const productData = result.rows[0];
+    
+    // Get images array, fallback to single image, then to empty array
+    let images = [];
+    if (productData.images && Array.isArray(productData.images) && productData.images.length > 0) {
+      images = productData.images;
+    } else if (productData.image) {
+      images = [productData.image];
+    }
+    
+    // Get features array
+    let features = [];
+    if (productData.features && Array.isArray(productData.features) && productData.features.length > 0) {
+      features = productData.features;
+    }
+
     const product = {
-      ...result.rows[0],
-      price: parseFloat(result.rows[0].price),
-      price_ht: result.rows[0].price_ht ? parseFloat(result.rows[0].price_ht) : null,
-      tva_rate: parseFloat(result.rows[0].tva_rate || 20),
-      stock: parseInt(result.rows[0].stock || 0)
+      ...productData,
+      price: parseFloat(productData.price),
+      price_ht: productData.price_ht ? parseFloat(productData.price_ht) : null,
+      tva_rate: parseFloat(productData.tva_rate || 20),
+      stock: parseInt(productData.stock || 0),
+      images: images,
+      image: images[0] || productData.image || null, // Keep image for backward compatibility
+      features: features
     };
 
     res.status(201).json({
@@ -268,7 +322,7 @@ router.put('/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { 
-      title, description, price, price_ht, tva_rate, image, category, collection,
+      title, description, price, price_ht, tva_rate, image, images, category, collection,
       status, stock, stock_alert_threshold, archived 
     } = req.body;
 
@@ -296,9 +350,35 @@ router.put('/products/:id', async (req, res) => {
       updates.push(`tva_rate = $${paramCount++}`);
       values.push(tva_rate);
     }
-    if (image !== undefined) {
+    // Handle images array - update both image and images
+    if (images !== undefined || image !== undefined) {
+      let imagesArray = [];
+      if (images !== undefined && Array.isArray(images) && images.length > 0) {
+        imagesArray = images;
+      } else if (image !== undefined && image) {
+        imagesArray = [image];
+      } else if (images !== undefined) {
+        // images is empty array, clear it
+        imagesArray = [];
+      }
+      
+      const firstImage = imagesArray.length > 0 ? imagesArray[0] : (image || null);
+      
       updates.push(`image = $${paramCount++}`);
-      values.push(image);
+      values.push(firstImage);
+      
+      updates.push(`images = $${paramCount++}::jsonb`);
+      values.push(JSON.stringify(imagesArray));
+    }
+    
+    // Handle features array
+    if (req.body.features !== undefined) {
+      const featuresArray = Array.isArray(req.body.features) && req.body.features.length > 0
+        ? req.body.features.filter((f) => f && f.trim() !== '') // Filter out empty features
+        : [];
+      
+      updates.push(`features = $${paramCount++}::jsonb`);
+      values.push(JSON.stringify(featuresArray));
     }
     if (category !== undefined) {
       updates.push(`category = $${paramCount++}`);
@@ -344,12 +424,31 @@ router.put('/products/:id', async (req, res) => {
       });
     }
 
+    const productData = result.rows[0];
+    
+    // Get images array, fallback to single image, then to empty array
+    let productImages = [];
+    if (productData.images && Array.isArray(productData.images) && productData.images.length > 0) {
+      productImages = productData.images;
+    } else if (productData.image) {
+      productImages = [productData.image];
+    }
+    
+    // Get features array
+    let productFeatures = [];
+    if (productData.features && Array.isArray(productData.features) && productData.features.length > 0) {
+      productFeatures = productData.features;
+    }
+
     const product = {
-      ...result.rows[0],
-      price: parseFloat(result.rows[0].price),
-      price_ht: result.rows[0].price_ht ? parseFloat(result.rows[0].price_ht) : null,
-      tva_rate: parseFloat(result.rows[0].tva_rate || 20),
-      stock: parseInt(result.rows[0].stock || 0)
+      ...productData,
+      price: parseFloat(productData.price),
+      price_ht: productData.price_ht ? parseFloat(productData.price_ht) : null,
+      tva_rate: parseFloat(productData.tva_rate || 20),
+      stock: parseInt(productData.stock || 0),
+      images: productImages,
+      image: productImages[0] || productData.image || null, // Keep image for backward compatibility
+      features: productFeatures
     };
 
     res.json({

@@ -20,7 +20,12 @@
     "create-categories-table": "node scripts/create-product-categories-table.js",
     "migrate-gift-cards": "node scripts/run-gift-cards-migration.js",
     "add-test-goodies": "node scripts/add-test-goodies.js",
-    "add-eighth-ceramic": "node scripts/add-eighth-ceramic.js"
+    "add-eighth-ceramic": "node scripts/add-eighth-ceramic.js",
+    "remove-ceramic-products": "node scripts/remove-ceramic-products.js",
+    "add-gobelet-isotherme": "node scripts/add-gobelet-isotherme.js",
+    "run-migration-016": "node scripts/run-migration-016.js",
+    "run-migration-017": "node scripts/run-migration-017.js",
+    "fix-gobelet-product": "node scripts/fix-gobelet-product.js"
   },
   "keywords": [
     "express",

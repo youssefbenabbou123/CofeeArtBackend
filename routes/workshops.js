@@ -40,10 +40,22 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows.map(workshop => ({
-        ...workshop,
-        price: parseFloat(workshop.price || 0)
-      }))
+      data: result.rows.map(workshop => {
+        // Get images array, fallback to single image, then to empty array
+        let images = [];
+        if (workshop.images && Array.isArray(workshop.images) && workshop.images.length > 0) {
+          images = workshop.images;
+        } else if (workshop.image) {
+          images = [workshop.image];
+        }
+        
+        return {
+          ...workshop,
+          price: parseFloat(workshop.price || 0),
+          images: images,
+          image: images[0] || workshop.image || null // Keep image for backward compatibility
+        };
+      })
     });
   } catch (error) {
     console.error('Error fetching workshops:', error);
@@ -199,11 +211,21 @@ router.get('/:id', async (req, res) => {
       [id]
     );
 
+    // Get images array, fallback to single image, then to empty array
+    let images = [];
+    if (workshop.images && Array.isArray(workshop.images) && workshop.images.length > 0) {
+      images = workshop.images;
+    } else if (workshop.image) {
+      images = [workshop.image];
+    }
+    
     res.json({
       success: true,
       data: {
         ...workshop,
         price: parseFloat(workshop.price || 0),
+        images: images,
+        image: images[0] || workshop.image || null, // Keep image for backward compatibility
         sessions: sessionsResult.rows
       }
     });

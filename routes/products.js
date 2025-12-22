@@ -7,14 +7,37 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, title, description, price, image, created_at FROM products ORDER BY created_at DESC'
+      `SELECT id, title, description, price, image, images, features, category, status, archived, created_at 
+       FROM products 
+       WHERE (status = 'active' OR status IS NULL) 
+       AND (archived = false OR archived IS NULL)
+       ORDER BY created_at DESC`
     );
     
-    // Convert price from string to number (PostgreSQL DECIMAL returns as string)
-    const products = result.rows.map(product => ({
-      ...product,
-      price: parseFloat(product.price)
-    }));
+    // Convert price from string to number and handle images array
+    const products = result.rows.map(product => {
+      // Get images array, fallback to single image, then to empty array
+      let images = [];
+      if (product.images && Array.isArray(product.images) && product.images.length > 0) {
+        images = product.images;
+      } else if (product.image) {
+        images = [product.image];
+      }
+      
+      // Get features array
+      let features = [];
+      if (product.features && Array.isArray(product.features) && product.features.length > 0) {
+        features = product.features;
+      }
+      
+      return {
+        ...product,
+        price: parseFloat(product.price),
+        images: images,
+        image: images[0] || product.image || null, // Keep image for backward compatibility
+        features: features
+      };
+    });
     
     res.json({
       success: true,
@@ -35,7 +58,7 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      'SELECT id, title, description, price, image, created_at FROM products WHERE id = $1',
+      'SELECT id, title, description, price, image, images, features, created_at FROM products WHERE id = $1',
       [id]
     );
     
@@ -46,10 +69,29 @@ router.get('/:id', async (req, res) => {
       });
     }
     
+    const productData = result.rows[0];
+    
+    // Get images array, fallback to single image, then to empty array
+    let images = [];
+    if (productData.images && Array.isArray(productData.images) && productData.images.length > 0) {
+      images = productData.images;
+    } else if (productData.image) {
+      images = [productData.image];
+    }
+    
+    // Get features array
+    let features = [];
+    if (productData.features && Array.isArray(productData.features) && productData.features.length > 0) {
+      features = productData.features;
+    }
+    
     // Convert price from string to number (PostgreSQL DECIMAL returns as string)
     const product = {
-      ...result.rows[0],
-      price: parseFloat(result.rows[0].price)
+      ...productData,
+      price: parseFloat(productData.price),
+      images: images,
+      image: images[0] || productData.image || null, // Keep image for backward compatibility
+      features: features
     };
     
     res.json({
