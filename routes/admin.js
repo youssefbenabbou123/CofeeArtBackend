@@ -1415,6 +1415,14 @@ router.get('/stats', async (req, res) => {
     `);
     const bookingsCount = parseInt(bookingsResult.rows[0].count);
 
+    // Get blogs count
+    const blogsResult = await pool.query('SELECT COUNT(*) as count FROM blog_posts WHERE (published IS NULL OR published = true)');
+    const blogsCount = parseInt(blogsResult.rows[0].count);
+
+    // Get gift cards count
+    const giftCardsResult = await pool.query('SELECT COUNT(*) as count FROM gift_cards WHERE status = $1', ['active']);
+    const giftCardsCount = parseInt(giftCardsResult.rows[0].count);
+
     // Get order status breakdown
     const statusBreakdownQuery = `
       SELECT status, COUNT(*) as count
@@ -1439,6 +1447,8 @@ router.get('/stats', async (req, res) => {
         orders: ordersCount,
         workshops: workshopsCount,
         bookings: bookingsCount,
+        blogs: blogsCount,
+        giftCards: giftCardsCount,
         salesData,
         categoryData,
         topProducts,

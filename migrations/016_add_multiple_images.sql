@@ -23,3 +23,4 @@ WHERE image IS NOT NULL AND (images IS NULL OR images = '[]'::jsonb);
 CREATE INDEX IF NOT EXISTS idx_products_images ON products USING GIN (images);
 CREATE INDEX IF NOT EXISTS idx_workshops_images ON workshops USING GIN (images);
 
+
