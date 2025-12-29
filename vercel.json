@@ -1,0 +1,8 @@
+{
+  "buildCommand": "echo 'No build needed'",
+  "outputDirectory": ".",
+  "installCommand": "npm install",
+  "framework": null,
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD ."
+}
+
