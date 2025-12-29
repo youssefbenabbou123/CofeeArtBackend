@@ -1,9 +1,9 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import pool from '../db.js';
+import { getCollection, getDB } from '../db-mongodb.js';
 import { optionalAuth, verifyToken } from '../middleware/auth.js';
 import { sendOrderConfirmation } from '../services/email.js';
-import { createPaymentIntent } from '../services/stripe.js';
+import { createCheckoutLink } from '../services/square.js';
 
 // Ensure environment variables are loaded
 dotenv.config();
@@ -14,33 +14,42 @@ async function syncClient(data) {
   
   if (!email) return null;
 
+  const clientsCollection = await getCollection('clients');
+  
   // Check if client exists
-  const existing = await pool.query(
-    'SELECT * FROM clients WHERE email = $1',
-    [email.toLowerCase()]
-  );
+  const existing = await clientsCollection.findOne({ email: email.toLowerCase() });
 
-  if (existing.rows.length > 0) {
+  if (existing) {
     // Update client stats
-    const client = existing.rows[0];
-    await pool.query(
-      `UPDATE clients 
-       SET total_orders = total_orders + 1,
-           last_order_date = NOW(),
-           updated_at = NOW()
-       WHERE id = $1`,
-      [client.id]
+    await clientsCollection.updateOne(
+      { _id: existing._id },
+      {
+        $inc: { total_orders: 1 },
+        $set: {
+          last_order_date: new Date(),
+          updated_at: new Date()
+        }
+      }
     );
-    return client.id;
+    return existing._id;
   } else {
     // Create new client
-    const result = await pool.query(
-      `INSERT INTO clients (name, email, phone, address, city, postal_code, country)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id`,
-      [name, email.toLowerCase(), phone || null, address || null, city || null, postal_code || null, country || 'France']
-    );
-    return result.rows[0].id;
+    const clientData = {
+      name,
+      email: email.toLowerCase(),
+      phone: phone || null,
+      address: address || null,
+      city: city || null,
+      postal_code: postal_code || null,
+      country: country || 'France',
+      total_orders: 1,
+      total_spent: 0,
+      last_order_date: new Date(),
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    const result = await clientsCollection.insertOne(clientData);
+    return result.insertedId;
   }
 }
 
@@ -104,99 +113,110 @@ router.post('/', optionalAuth, async (req, res) => {
       }
     }
 
-    // Create Stripe payment intent if requested
-    let paymentIntentId = null;
-    let clientSecret = null;
-    let stripeError = null;
+    // Create Square checkout link if requested
+    let checkoutUrl = null;
+    let checkoutSessionId = null;
+    let squareError = null;
     
     if (create_payment_intent) {
-      const stripeKey = process.env.STRIPE_SECRET_KEY;
+      const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAlwdJ7P_xs8TsIIhZcpYwoUHemvlji3dN7h1qfcapjYOma7l0tu7RComJIGuj';
+      const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
       
-      if (!stripeKey) {
-        console.error('❌ STRIPE_SECRET_KEY is not set in environment variables');
-        console.error('   Payment intent creation skipped. Please add STRIPE_SECRET_KEY to your .env file.');
-        console.error('   For deployed services (Vercel/Railway), add it to the environment variables in the dashboard.');
-        stripeError = 'STRIPE_SECRET_KEY not configured';
-      } else if (!stripeKey.startsWith('sk_')) {
-        console.error('❌ STRIPE_SECRET_KEY format is invalid');
-        console.error('   Stripe secret keys must start with "sk_test_" or "sk_live_"');
-        console.error('   Current key prefix:', stripeKey.substring(0, 10) + '...');
-        stripeError = 'STRIPE_SECRET_KEY format is invalid';
+      if (!accessToken || !applicationId) {
+        console.error('❌ SQUARE_ACCESS_TOKEN or SQUARE_APPLICATION_ID is not set in environment variables');
+        console.error('   Payment checkout creation skipped. Please add Square credentials to your .env file.');
+        console.error('   For deployed services (Vercel/Railway), add them to the environment variables in the dashboard.');
+        squareError = 'Square credentials not configured';
       } else {
         try {
-          console.log('🔄 Creating Stripe payment intent for amount:', total, 'EUR');
-          const paymentResult = await createPaymentIntent(total, 'eur', {
+          console.log('🔄 Creating Square checkout link for amount:', total, 'EUR');
+          
+          // Get frontend URL for redirects
+          const getFrontendUrl = () => {
+            if (process.env.FRONTEND_URL) {
+              return process.env.FRONTEND_URL;
+            }
+            const origin = req.headers.origin || req.headers.referer;
+            if (origin) {
+              try {
+                const url = new URL(origin);
+                return url.origin;
+              } catch (e) {
+                // Invalid URL
+              }
+            }
+            return 'http://localhost:3000';
+          };
+          
+          const frontendUrl = getFrontendUrl();
+          const successUrl = `${frontendUrl}/boutique?order=success`;
+          const cancelUrl = `${frontendUrl}/panier?cancelled=true`;
+          
+          const lineItems = items.map(item => ({
+            name: `Product ${item.id}`,
+            quantity: item.quantity,
+            amount: item.price * item.quantity,
+          }));
+          
+          const checkoutResult = await createCheckoutLink(lineItems, successUrl, cancelUrl, {
             order_type: 'product',
             guest_email: guest_email || null,
             user_id: userId || null
           });
-          paymentIntentId = paymentResult.paymentIntentId;
-          clientSecret = paymentResult.clientSecret;
-          console.log('✅ Payment intent created successfully');
-          console.log('   Payment Intent ID:', paymentIntentId);
-          console.log('   Client Secret:', clientSecret.substring(0, 20) + '...');
+          
+          checkoutSessionId = checkoutResult.id;
+          checkoutUrl = checkoutResult.url;
+          console.log('✅ Square checkout link created successfully');
+          console.log('   Checkout Session ID:', checkoutSessionId);
         } catch (err) {
-          console.error('❌ Error creating payment intent:', err.message);
-          console.error('   Error type:', err.type || 'Unknown');
-          console.error('   Error code:', err.code || 'N/A');
+          console.error('❌ Error creating Square checkout link:', err.message);
           console.error('   Full error:', err);
-          stripeError = err.message || 'Failed to create payment intent';
+          squareError = err.message || 'Failed to create checkout link';
         }
       }
     }
 
-    const client = await pool.connect();
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
     
     try {
-      await client.query('BEGIN');
-
       // Create order
-      const orderResult = await client.query(
-        `INSERT INTO orders (
-          user_id, 
-          total, 
-          guest_name, 
-          guest_email, 
-          guest_phone, 
-          shipping_address, 
-          shipping_city, 
-          shipping_postal_code, 
-          shipping_country,
-          status,
-          payment_status,
-          payment_method,
-          stripe_payment_intent_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
-        RETURNING id, created_at`,
-        [
-          userId,
-          total,
-          guest_name || null,
-          guest_email || null,
-          guest_phone || null,
-          shipping_address || null,
-          shipping_city || null,
-          shipping_postal_code || null,
-          shipping_country || 'France',
-          'confirmed',
-          paymentIntentId ? 'pending' : 'unpaid',
-          payment_method || null,
-          paymentIntentId
-        ]
-      );
+      const orderData = {
+        user_id: userId || null,
+        total: total,
+        guest_name: guest_name || null,
+        guest_email: guest_email || null,
+        guest_phone: guest_phone || null,
+        shipping_address: shipping_address || null,
+        shipping_city: shipping_city || null,
+        shipping_postal_code: shipping_postal_code || null,
+        shipping_country: shipping_country || 'France',
+        status: 'confirmed',
+        payment_status: checkoutSessionId ? 'pending' : 'unpaid',
+        payment_method: payment_method || null,
+        square_payment_id: checkoutSessionId || null,
+        created_at: new Date()
+      };
 
-      const order = orderResult.rows[0];
+      const orderResult = await ordersCollection.insertOne(orderData);
+      const orderId = orderResult.insertedId;
 
       // Create order items
-      for (const item of items) {
-        await client.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, price) 
-           VALUES ($1, $2, $3, $4)`,
-          [order.id, item.id, item.quantity, item.price]
-        );
+      const orderItems = items.map(item => ({
+        order_id: orderId,
+        product_id: item.id,
+        quantity: item.quantity,
+        price: item.price
+      }));
+
+      if (orderItems.length > 0) {
+        await orderItemsCollection.insertMany(orderItems);
       }
 
-      await client.query('COMMIT');
+      const order = {
+        id: orderId,
+        created_at: orderData.created_at
+      };
 
       // Sync client if guest order
       if (!userId && guest_email) {
@@ -231,15 +251,15 @@ router.post('/', optionalAuth, async (req, res) => {
         }
       }
 
-      // Log payment intent status for debugging
+      // Log checkout link status for debugging
       if (create_payment_intent) {
-        if (clientSecret) {
-          console.log('✅ Payment intent included in order response');
+        if (checkoutUrl) {
+          console.log('✅ Checkout link included in order response');
         } else {
-          console.warn('⚠️  Payment intent was requested but not created');
-          console.warn('   STRIPE_SECRET_KEY available:', !!process.env.STRIPE_SECRET_KEY);
-          if (stripeError) {
-            console.warn('   Error reason:', stripeError);
+          console.warn('⚠️  Checkout link was requested but not created');
+          console.warn('   Square credentials available:', !!(process.env.SQUARE_ACCESS_TOKEN || 'EAAAlwdJ7P_xs8TsIIhZcpYwoUHemvlji3dN7h1qfcapjYOma7l0tu7RComJIGuj'));
+          if (squareError) {
+            console.warn('   Error reason:', squareError);
           }
         }
       }
@@ -251,21 +271,27 @@ router.post('/', optionalAuth, async (req, res) => {
           order_id: order.id,
           total: total,
           created_at: order.created_at,
-          payment_intent: clientSecret ? {
-            client_secret: clientSecret,
-            payment_intent_id: paymentIntentId
+          checkout: checkoutUrl ? {
+            checkout_url: checkoutUrl,
+            checkout_session_id: checkoutSessionId
           } : null,
-          // Include error info if payment intent was requested but failed
-          ...(create_payment_intent && !clientSecret && stripeError ? {
-            payment_intent_error: stripeError
+          // Include error info if checkout was requested but failed
+          ...(create_payment_intent && !checkoutUrl && squareError ? {
+            payment_intent_error: squareError
           } : {})
         }
       });
     } catch (error) {
-      await client.query('ROLLBACK');
+      // If order was created, try to clean up
+      if (orderId) {
+        try {
+          await ordersCollection.deleteOne({ _id: orderId });
+          await orderItemsCollection.deleteMany({ order_id: orderId });
+        } catch (cleanupError) {
+          console.error('Error cleaning up failed order:', cleanupError);
+        }
+      }
       throw error;
-    } finally {
-      client.release();
     }
   } catch (error) {
     console.error('Error creating order:', error);
@@ -289,24 +315,28 @@ router.get('/', optionalAuth, async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `SELECT 
-        o.id, 
-        o.total, 
-        o.status, 
-        o.created_at,
-        COUNT(oi.id) as item_count
-       FROM orders o
-       LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.user_id = $1
-       GROUP BY o.id
-       ORDER BY o.created_at DESC`,
-      [userId]
-    );
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
+    
+    const orders = await ordersCollection.find({ user_id: userId })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    // Get item counts for each order
+    const ordersWithCounts = await Promise.all(orders.map(async (order) => {
+      const itemCount = await orderItemsCollection.countDocuments({ order_id: order._id });
+      return {
+        id: order._id,
+        total: order.total,
+        status: order.status,
+        created_at: order.created_at,
+        item_count: itemCount
+      };
+    }));
 
     res.json({
       success: true,
-      data: result.rows
+      data: ordersWithCounts
     });
   } catch (error) {
     console.error('Error fetching orders:', error);
@@ -324,20 +354,19 @@ router.get('/:id', optionalAuth, async (req, res) => {
     const { id } = req.params;
     const userId = req.user?.userId;
 
-    // Get order
-    const orderResult = await pool.query(
-      `SELECT * FROM orders WHERE id = $1`,
-      [id]
-    );
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
+    const productsCollection = await getCollection('products');
 
-    if (orderResult.rows.length === 0) {
+    // Get order
+    const order = await ordersCollection.findOne({ _id: id });
+
+    if (!order) {
       return res.status(404).json({
         success: false,
         message: 'Commande non trouvée'
       });
     }
-
-    const order = orderResult.rows[0];
 
     // Check if user has access
     // For authenticated users: must be the owner or admin
@@ -361,26 +390,26 @@ router.get('/:id', optionalAuth, async (req, res) => {
       }
     }
 
-    // Get order items
-    const itemsResult = await pool.query(
-      `SELECT 
-        oi.id,
-        oi.quantity,
-        oi.price,
-        p.id as product_id,
-        p.title,
-        p.image
-       FROM order_items oi
-       LEFT JOIN products p ON oi.product_id = p.id
-       WHERE oi.order_id = $1`,
-      [id]
-    );
+    // Get order items with product details
+    const orderItems = await orderItemsCollection.find({ order_id: id }).toArray();
+    const items = await Promise.all(orderItems.map(async (item) => {
+      const product = await productsCollection.findOne({ _id: item.product_id });
+      return {
+        id: item._id,
+        quantity: item.quantity,
+        price: item.price,
+        product_id: item.product_id,
+        title: product?.title || null,
+        image: product?.image || null
+      };
+    }));
 
     res.json({
       success: true,
       data: {
+        id: order._id,
         ...order,
-        items: itemsResult.rows
+        items: items
       }
     });
   } catch (error) {

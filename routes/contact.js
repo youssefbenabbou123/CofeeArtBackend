@@ -1,5 +1,5 @@
 import express from 'express';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 import { body, validationResult } from 'express-validator';
 
 const router = express.Router();
@@ -43,15 +43,25 @@ router.post('/', validateContact, async (req, res) => {
     const { name, email, subject, message } = req.body;
 
     // Insert message into database
-    const result = await pool.query(
-      'INSERT INTO contact_messages (name, email, subject, message) VALUES ($1, $2, $3, $4) RETURNING id, name, email, subject, message, read, created_at',
-      [name.trim(), email.toLowerCase().trim(), subject.trim(), message.trim()]
-    );
+    const collection = await getCollection('contact_messages');
+    const messageData = {
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      subject: subject.trim(),
+      message: message.trim(),
+      read: false,
+      created_at: new Date()
+    };
+
+    const result = await collection.insertOne(messageData);
 
     res.status(201).json({
       success: true,
       message: 'Message envoyé avec succès',
-      data: result.rows[0]
+      data: {
+        id: result.insertedId,
+        ...messageData
+      }
     });
   } catch (error) {
     console.error('Contact form error:', error);

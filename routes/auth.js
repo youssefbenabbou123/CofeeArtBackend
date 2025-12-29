@@ -1,5 +1,5 @@
 import express from 'express';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
@@ -94,12 +94,10 @@ router.post('/signup', authLimiter, validateSignup, async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
-      [email.toLowerCase()]
-    );
+    const usersCollection = await getCollection('users');
+    const existingUser = await usersCollection.findOne({ email: email.toLowerCase() });
 
-    if (existingUser.rows.length > 0) {
+    if (existingUser) {
       return res.status(409).json({
         success: false,
         message: 'Cet email est déjà utilisé'
@@ -111,12 +109,22 @@ router.post('/signup', authLimiter, validateSignup, async (req, res) => {
     const password_hash = await bcrypt.hash(password, saltRounds);
 
     // Create user
-    const result = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, created_at',
-      [name.trim(), email.toLowerCase().trim(), password_hash, 'client']
-    );
+    const userData = {
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      password_hash: password_hash,
+      role: 'client',
+      created_at: new Date()
+    };
 
-    const user = result.rows[0];
+    const result = await usersCollection.insertOne(userData);
+    const user = {
+      id: result.insertedId,
+      name: userData.name,
+      email: userData.email,
+      role: userData.role,
+      created_at: userData.created_at
+    };
 
     // Generate token
     const token = generateToken(user.id, user.email, user.role);
@@ -160,19 +168,15 @@ router.post('/signin', authLimiter, validateSignin, async (req, res) => {
     const { email, password } = req.body;
 
     // Find user
-    const result = await pool.query(
-      'SELECT id, name, email, password_hash, role FROM users WHERE email = $1',
-      [email.toLowerCase().trim()]
-    );
+    const usersCollection = await getCollection('users');
+    const user = await usersCollection.findOne({ email: email.toLowerCase().trim() });
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: 'Email ou mot de passe incorrect'
       });
     }
-
-    const user = result.rows[0];
 
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
@@ -185,14 +189,14 @@ router.post('/signin', authLimiter, validateSignin, async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user.id, user.email, user.role);
+    const token = generateToken(user._id, user.email, user.role);
 
     res.json({
       success: true,
       message: 'Connexion réussie',
       data: {
         user: {
-          id: user.id,
+          id: user._id,
           name: user.name,
           email: user.email,
           role: user.role
@@ -226,12 +230,10 @@ router.get('/me', async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
 
     // Get user from database
-    const result = await pool.query(
-      'SELECT id, name, email, role, created_at FROM users WHERE id = $1',
-      [decoded.userId]
-    );
+    const usersCollection = await getCollection('users');
+    const user = await usersCollection.findOne({ _id: decoded.userId });
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({
         success: false,
         message: 'Utilisateur non trouvé'
@@ -240,7 +242,13 @@ router.get('/me', async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        created_at: user.created_at
+      }
     });
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {

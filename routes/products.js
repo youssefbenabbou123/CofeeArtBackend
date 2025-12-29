@@ -1,22 +1,35 @@
 import express from 'express';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 
 const router = express.Router();
 
 // GET all products
 router.get('/', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT id, title, description, price, image, images, features, category, status, archived, created_at 
-       FROM products 
-       WHERE (status = 'active' OR status IS NULL) 
-       AND (archived = false OR archived IS NULL)
-       ORDER BY created_at DESC`
-    );
+    const collection = await getCollection('products');
     
-    // Convert price from string to number and handle images array
-    const products = result.rows.map(product => {
-      // Get images array, fallback to single image, then to empty array
+    const products = await collection.find({
+      $and: [
+        {
+          $or: [
+            { status: 'active' },
+            { status: null }
+          ]
+        },
+        {
+          $or: [
+            { archived: false },
+            { archived: null }
+          ]
+        }
+      ]
+    })
+    .sort({ created_at: -1 })
+    .toArray();
+    
+    // Transform products
+    const transformedProducts = products.map(product => {
+      // Get images array
       let images = [];
       if (product.images && Array.isArray(product.images) && product.images.length > 0) {
         images = product.images;
@@ -31,17 +44,23 @@ router.get('/', async (req, res) => {
       }
       
       return {
-        ...product,
-        price: parseFloat(product.price),
+        id: product._id,
+        title: product.title,
+        description: product.description,
+        price: product.price || 0,
+        image: images[0] || product.image || null,
         images: images,
-        image: images[0] || product.image || null, // Keep image for backward compatibility
-        features: features
+        features: features,
+        category: product.category,
+        status: product.status,
+        archived: product.archived,
+        created_at: product.created_at
       };
     });
     
     res.json({
       success: true,
-      data: products
+      data: transformedProducts
     });
   } catch (error) {
     console.error('Error fetching products:', error);
@@ -57,21 +76,18 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query(
-      'SELECT id, title, description, price, image, images, features, created_at FROM products WHERE id = $1',
-      [id]
-    );
+    const collection = await getCollection('products');
     
-    if (result.rows.length === 0) {
+    const productData = await collection.findOne({ _id: id });
+    
+    if (!productData) {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
     
-    const productData = result.rows[0];
-    
-    // Get images array, fallback to single image, then to empty array
+    // Get images array
     let images = [];
     if (productData.images && Array.isArray(productData.images) && productData.images.length > 0) {
       images = productData.images;
@@ -85,13 +101,15 @@ router.get('/:id', async (req, res) => {
       features = productData.features;
     }
     
-    // Convert price from string to number (PostgreSQL DECIMAL returns as string)
     const product = {
-      ...productData,
-      price: parseFloat(productData.price),
+      id: productData._id,
+      title: productData.title,
+      description: productData.description,
+      price: productData.price || 0,
+      image: images[0] || productData.image || null,
       images: images,
-      image: images[0] || productData.image || null, // Keep image for backward compatibility
-      features: features
+      features: features,
+      created_at: productData.created_at
     };
     
     res.json({

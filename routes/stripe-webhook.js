@@ -1,6 +1,6 @@
 import express from 'express';
 import Stripe from 'stripe';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -41,11 +41,15 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
           const recipientEmail = session.metadata.recipient_email;
           
           // Update gift card status (already created, just mark as paid)
-          await pool.query(
-            `UPDATE gift_cards 
-             SET status = 'active', updated_at = NOW()
-             WHERE id = $1`,
-            [giftCardId]
+          const giftCardsCollection = await getCollection('gift_cards');
+          await giftCardsCollection.updateOne(
+            { _id: giftCardId },
+            {
+              $set: {
+                status: 'active',
+                updated_at: new Date()
+              }
+            }
           );
 
           // TODO: Send email to recipient with code
@@ -55,41 +59,34 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         // Handle workshop booking
         if (session.metadata?.type === 'workshop_booking' && session.metadata?.reservation_id) {
           const reservationId = session.metadata.reservation_id;
-          const client = await pool.connect();
+          const reservationsCollection = await getCollection('reservations');
+          const workshopsCollection = await getCollection('workshops');
+          const sessionsCollection = await getCollection('workshop_sessions');
           
           try {
-            await client.query('BEGIN');
-            
             // Update reservation status to confirmed
-            await client.query(
-              `UPDATE reservations 
-               SET status = 'confirmed', updated_at = NOW()
-               WHERE id = $1 AND status = 'pending'`,
-              [reservationId]
+            await reservationsCollection.updateOne(
+              { _id: reservationId, status: 'pending' },
+              {
+                $set: {
+                  status: 'confirmed',
+                  updated_at: new Date()
+                }
+              }
             );
 
             // Get reservation details
-            const reservation = await client.query(
-              'SELECT session_id, quantity FROM reservations WHERE id = $1',
-              [reservationId]
-            );
+            const reservation = await reservationsCollection.findOne({ _id: reservationId });
 
-            if (reservation.rows.length > 0) {
+            if (reservation) {
               // booked_count was already incremented when reservation was created
               // Just confirm the reservation status (booked_count already updated)
 
               // Get workshop and session details for email
-              const workshopResult = await client.query(
-                `SELECT w.*, ws.session_date, ws.session_time 
-                 FROM workshops w
-                 JOIN reservations r ON r.workshop_id = w.id
-                 JOIN workshop_sessions ws ON r.session_id = ws.id
-                 WHERE r.id = $1`,
-                [reservationId]
-              );
+              const workshop = await workshopsCollection.findOne({ _id: reservation.workshop_id });
+              const sessionData = await sessionsCollection.findOne({ _id: reservation.session_id });
 
-              if (workshopResult.rows.length > 0) {
-                const workshop = workshopResult.rows[0];
+              if (workshop && sessionData) {
                 const email = session.metadata.guest_email || null;
                 const guestName = session.metadata.guest_name || 'Participant';
 
@@ -100,8 +97,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
                     await sendWorkshopConfirmation(email, {
                       participantName: guestName,
                       workshopTitle: workshop.title,
-                      sessionDate: workshop.session_date,
-                      sessionTime: workshop.session_time,
+                      sessionDate: sessionData.session_date,
+                      sessionTime: sessionData.session_time,
                       duration: workshop.duration,
                       level: workshop.level
                     });
@@ -113,30 +110,29 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
               }
             }
 
-            await client.query('COMMIT');
             console.log(`✅ Workshop reservation ${reservationId} confirmed after payment`);
           } catch (error) {
-            await client.query('ROLLBACK');
             console.error(`❌ Error confirming workshop reservation ${reservationId}:`, error);
             throw error;
-          } finally {
-            client.release();
           }
         }
         
         // Handle order payment
         if (session.metadata?.order_id) {
           const orderId = session.metadata.order_id;
+          const ordersCollection = await getCollection('orders');
           
-          await pool.query(
-            `UPDATE orders 
-             SET payment_status = 'paid', 
-                 stripe_payment_intent_id = $1,
-                 payment_method = 'Stripe',
-                 status = 'confirmed',
-                 updated_at = NOW()
-             WHERE id = $2`,
-            [session.payment_intent, orderId]
+          await ordersCollection.updateOne(
+            { _id: orderId },
+            {
+              $set: {
+                payment_status: 'paid',
+                stripe_payment_intent_id: session.payment_intent,
+                payment_method: 'Stripe',
+                status: 'confirmed',
+                updated_at: new Date()
+              }
+            }
           );
 
           console.log(`✅ Order ${orderId} payment confirmed`);

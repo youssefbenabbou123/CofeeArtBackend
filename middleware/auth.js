@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 
 dotenv.config();
 
@@ -93,32 +93,29 @@ export async function requireAdmin(req, res, next) {
     }
 
     // Get user from database to check role
-    let result;
     try {
-      result = await pool.query(
-        'SELECT role FROM users WHERE id = $1',
-        [req.user.userId]
-      );
+      const usersCollection = await getCollection('users');
+      const user = await usersCollection.findOne({ _id: req.user.userId });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'Utilisateur non trouvé'
+        });
+      }
+
+      if (user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès refusé. Admin requis.'
+        });
+      }
     } catch (dbError) {
       console.error('Database error in requireAdmin:', dbError);
       return res.status(500).json({
         success: false,
         message: 'Erreur de connexion à la base de données',
         error: process.env.NODE_ENV === 'development' ? dbError.message : 'Erreur serveur'
-      });
-    }
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
-    }
-
-    if (result.rows[0].role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Accès refusé. Admin requis.'
       });
     }
 

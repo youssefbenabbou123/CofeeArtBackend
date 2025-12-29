@@ -1,8 +1,8 @@
 import express from 'express';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 import { optionalAuth } from '../middleware/auth.js';
 import crypto from 'crypto';
-import { createCheckoutSession } from '../services/stripe.js';
+import { createCheckoutLink } from '../services/square.js';
 
 const router = express.Router();
 
@@ -44,13 +44,16 @@ router.post('/purchase', optionalAuth, async (req, res) => {
       });
     }
 
+    const giftCardsCollection = await getCollection('gift_cards');
+    const transactionsCollection = await getCollection('gift_card_transactions');
+
     // Generate unique code
     let code;
     let attempts = 0;
     do {
       code = generateGiftCardCode();
-      const existing = await pool.query('SELECT id FROM gift_cards WHERE code = $1', [code]);
-      if (existing.rows.length === 0) break;
+      const existing = await giftCardsCollection.findOne({ code: code });
+      if (!existing) break;
       attempts++;
       if (attempts > 10) {
         throw new Error('Impossible de générer un code unique');
@@ -61,85 +64,47 @@ router.post('/purchase', optionalAuth, async (req, res) => {
     const expiryDate = new Date();
     expiryDate.setFullYear(expiryDate.getFullYear() + 1);
 
-    const client = await pool.connect();
-    
     try {
-      await client.query('BEGIN');
-
-      // Check which columns exist in gift_cards table
-      const columnCheck = await client.query(`
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'gift_cards' AND column_name IN ('category', 'used', 'purchaser_id', 'purchaser_email', 'purchaser_name')
-      `);
-      const existingColumns = columnCheck.rows.map(row => row.column_name);
-      const hasNewColumns = existingColumns.length > 0;
-
-      // Build INSERT query based on available columns
-      let insertColumns = ['code', 'amount', 'balance', 'expiry_date', 'status'];
-      let insertValues = ['$1', '$2', '$2', '$3', "'active'"];
-      let paramValues = [code, amount, expiryDate.toISOString().split('T')[0]];
-      let paramCount = 4;
-
-      if (hasNewColumns) {
-        if (existingColumns.includes('category')) {
-          insertColumns.push('category');
-          insertValues.push(`$${paramCount++}`);
-          paramValues.push(category);
-        }
-        if (existingColumns.includes('used')) {
-          insertColumns.push('used');
-          insertValues.push('false');
-        }
-        if (existingColumns.includes('purchaser_id')) {
-          insertColumns.push('purchaser_id');
-          insertValues.push(`$${paramCount++}`);
-          paramValues.push(userId);
-        }
-        if (existingColumns.includes('purchaser_email')) {
-          insertColumns.push('purchaser_email');
-          insertValues.push(`$${paramCount++}`);
-          paramValues.push(purchaser_email);
-        }
-        if (existingColumns.includes('purchaser_name')) {
-          insertColumns.push('purchaser_name');
-          insertValues.push(`$${paramCount++}`);
-          paramValues.push(purchaser_name || null);
-        }
-      }
-
-      const insertQuery = `
-        INSERT INTO gift_cards (${insertColumns.join(', ')})
-        VALUES (${insertValues.join(', ')})
-        RETURNING *
-      `;
-
       // Create gift card
-      const result = await client.query(insertQuery, paramValues);
+      const giftCardData = {
+        code: code,
+        amount: parseFloat(amount),
+        balance: parseFloat(amount),
+        expiry_date: expiryDate,
+        status: 'active',
+        category: category || null,
+        used: false,
+        purchaser_id: userId || null,
+        purchaser_email: purchaser_email || null,
+        purchaser_name: purchaser_name || null,
+        created_at: new Date(),
+        updated_at: new Date()
+      };
 
-      const giftCard = result.rows[0];
+      const result = await giftCardsCollection.insertOne(giftCardData);
+      const giftCard = {
+        id: result.insertedId,
+        ...giftCardData
+      };
 
       // Create purchase transaction
-      await client.query(
-        `INSERT INTO gift_card_transactions (gift_card_id, amount, transaction_type, notes)
-         VALUES ($1, $2, 'purchase', 'Achat de carte cadeau')`,
-        [giftCard.id, amount]
-      );
+      await transactionsCollection.insertOne({
+        gift_card_id: giftCard.id,
+        amount: parseFloat(amount),
+        transaction_type: 'purchase',
+        notes: 'Achat de carte cadeau',
+        created_at: new Date()
+      });
 
       let checkoutSessionId = null;
 
       if (create_payment_intent) {
         try {
           const lineItems = [{
-            price_data: {
-              currency: 'eur',
-              product_data: {
-                name: `Carte cadeau ${category} - ${amount}€`,
-                description: `Carte cadeau ${category} d'une valeur de ${amount}€`,
-              },
-              unit_amount: Math.round(parseFloat(amount) * 100), // Price in cents
-            },
+            name: `Carte cadeau ${category} - ${amount}€`,
+            description: `Carte cadeau ${category} d'une valeur de ${amount}€`,
             quantity: 1,
+            amount: parseFloat(amount),
           }];
 
           // Get frontend URL - prioritize environment variable, then try to extract from request
@@ -184,7 +149,7 @@ router.post('/purchase', optionalAuth, async (req, res) => {
           const successUrl = `${frontendUrl}/cartes-cadeaux?success=true&code=${code}`;
           const cancelUrl = `${frontendUrl}/cartes-cadeaux?cancelled=true`;
 
-          const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
+          const squareCheckout = await createCheckoutLink(lineItems, successUrl, cancelUrl, {
             gift_card_id: giftCard.id,
             gift_card_code: code,
             category: category,
@@ -193,11 +158,10 @@ router.post('/purchase', optionalAuth, async (req, res) => {
             recipient_email: recipient_email,
           });
 
-          if (stripeSession && stripeSession.id && stripeSession.url) {
-            checkoutSessionId = stripeSession.id;
-            const checkoutUrl = stripeSession.url;
+          if (squareCheckout && squareCheckout.id && squareCheckout.url) {
+            checkoutSessionId = squareCheckout.id;
+            const checkoutUrl = squareCheckout.url;
             
-            await client.query('COMMIT');
             return res.status(201).json({
               success: true,
               message: 'Carte cadeau créée. Redirection vers le paiement...',
@@ -209,19 +173,26 @@ router.post('/purchase', optionalAuth, async (req, res) => {
               }
             });
           } else {
-            throw new Error('Stripe session creation failed: no session ID or URL returned');
+            // Rollback on error
+            await giftCardsCollection.deleteOne({ _id: giftCard.id });
+            await transactionsCollection.deleteMany({ gift_card_id: giftCard.id });
+            throw new Error('Square checkout link creation failed: no session ID or URL returned');
           }
-        } catch (stripeError) {
-          console.error('Error creating Stripe checkout session:', stripeError);
-          await client.query('ROLLBACK');
-          throw new Error(`Erreur lors de la création de la session de paiement: ${stripeError.message}`);
+        } catch (squareError) {
+          console.error('Error creating Square checkout link:', squareError);
+          // Cleanup on error
+          try {
+            await giftCardsCollection.deleteOne({ _id: giftCard.id });
+            await transactionsCollection.deleteMany({ gift_card_id: giftCard.id });
+          } catch (cleanupError) {
+            console.error('Error cleaning up failed gift card:', cleanupError);
+          }
+          throw new Error(`Erreur lors de la création de la session de paiement: ${squareError.message}`);
         }
       } else {
         // If no payment needed, send email immediately
         // TODO: Send email with code to recipient_email
       }
-
-      await client.query('COMMIT');
 
       res.status(201).json({
         success: true,
@@ -233,10 +204,16 @@ router.post('/purchase', optionalAuth, async (req, res) => {
         }
       });
     } catch (error) {
-      await client.query('ROLLBACK');
+      // Cleanup on error
+      try {
+        if (giftCard?.id) {
+          await giftCardsCollection.deleteOne({ _id: giftCard.id });
+          await transactionsCollection.deleteMany({ gift_card_id: giftCard.id });
+        }
+      } catch (cleanupError) {
+        console.error('Error cleaning up failed gift card:', cleanupError);
+      }
       throw error;
-    } finally {
-      client.release();
     }
   } catch (error) {
     console.error('Error purchasing gift card:', error);
@@ -253,27 +230,15 @@ router.get('/check/:code', async (req, res) => {
   try {
     const { code } = req.params;
 
-    const result = await pool.query(
-      `SELECT 
-        code, 
-        balance, 
-        expiry_date, 
-        status, 
-        used,
-        category
-       FROM gift_cards 
-       WHERE code = $1`,
-      [code.toUpperCase()]
-    );
+    const giftCardsCollection = await getCollection('gift_cards');
+    const card = await giftCardsCollection.findOne({ code: code.toUpperCase() });
 
-    if (result.rows.length === 0) {
+    if (!card) {
       return res.status(404).json({
         success: false,
         message: 'Carte cadeau non trouvée'
       });
     }
-
-    const card = result.rows[0];
     const today = new Date();
     const expiryDate = new Date(card.expiry_date);
 
@@ -284,8 +249,13 @@ router.get('/check/:code', async (req, res) => {
         valid: false,
         message: 'Cette carte cadeau a expiré',
         card: {
-          ...card,
+          id: card._id,
+          code: card.code,
           balance: parseFloat(card.balance || 0),
+          expiry_date: card.expiry_date,
+          status: card.status,
+          used: card.used,
+          category: card.category,
           expired: true
         }
       });
@@ -298,9 +268,13 @@ router.get('/check/:code', async (req, res) => {
         valid: false,
         message: 'Cette carte cadeau a déjà été utilisée',
         card: {
-          ...card,
+          id: card._id,
+          code: card.code,
           balance: parseFloat(card.balance || 0),
-          used: true
+          expiry_date: card.expiry_date,
+          status: card.status,
+          used: true,
+          category: card.category
         }
       });
     }
@@ -312,8 +286,13 @@ router.get('/check/:code', async (req, res) => {
         valid: false,
         message: 'Cette carte cadeau n\'est pas active',
         card: {
-          ...card,
-          balance: parseFloat(card.balance || 0)
+          id: card._id,
+          code: card.code,
+          balance: parseFloat(card.balance || 0),
+          expiry_date: card.expiry_date,
+          status: card.status,
+          used: card.used,
+          category: card.category
         }
       });
     }
@@ -323,8 +302,13 @@ router.get('/check/:code', async (req, res) => {
       valid: true,
       message: 'Carte cadeau valide',
       card: {
-        ...card,
-        balance: parseFloat(card.balance || 0)
+        id: card._id,
+        code: card.code,
+        balance: parseFloat(card.balance || 0),
+        expiry_date: card.expiry_date,
+        status: card.status,
+        used: card.used,
+        category: card.category
       }
     });
   } catch (error) {

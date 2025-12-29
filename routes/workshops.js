@@ -1,5 +1,5 @@
 import express from 'express';
-import pool from '../db.js';
+import { getCollection } from '../db-mongodb.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { sendWorkshopConfirmation, sendWorkshopCancellation } from '../services/email.js';
 
@@ -10,52 +10,63 @@ router.get('/', async (req, res) => {
   try {
     const { level, status } = req.query;
 
-    let query = `
-      SELECT 
-        w.id,
-        w.title,
-        w.description,
-        w.level,
-        w.duration,
-        w.price,
-        w.image,
-        w.status,
-        COUNT(DISTINCT ws.id) as session_count,
-        MIN(ws.session_date) as next_session_date
-      FROM workshops w
-      LEFT JOIN workshop_sessions ws ON w.id = ws.workshop_id AND ws.status = 'active'
-      WHERE w.status = 'active'
-    `;
-    const params = [];
-    let paramCount = 1;
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
+    // Build query
+    const query = { status: 'active' };
     if (level) {
-      query += ` AND w.level = $${paramCount++}`;
-      params.push(level);
+      query.level = level;
     }
 
-    query += ` GROUP BY w.id ORDER BY next_session_date ASC NULLS LAST, w.created_at DESC`;
+    const workshops = await workshopsCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
-    const result = await pool.query(query, params);
+    // Get sessions for each workshop and calculate session_count and next_session_date
+    const workshopsWithSessions = await Promise.all(workshops.map(async (workshop) => {
+      const sessions = await sessionsCollection.find({
+        workshop_id: workshop._id,
+        status: 'active'
+      }).toArray();
+
+      const sessionDates = sessions.map(s => s.session_date).filter(Boolean);
+      const nextSessionDate = sessionDates.length > 0 ? new Date(Math.min(...sessionDates.map(d => new Date(d).getTime()))) : null;
+
+      // Get images array
+      let images = [];
+      if (workshop.images && Array.isArray(workshop.images) && workshop.images.length > 0) {
+        images = workshop.images;
+      } else if (workshop.image) {
+        images = [workshop.image];
+      }
+
+      return {
+        id: workshop._id,
+        title: workshop.title,
+        description: workshop.description,
+        level: workshop.level,
+        duration: workshop.duration,
+        price: workshop.price || 0,
+        image: images[0] || workshop.image || null,
+        images: images,
+        status: workshop.status,
+        session_count: sessions.length,
+        next_session_date: nextSessionDate
+      };
+    }));
+
+    // Sort by next_session_date
+    workshopsWithSessions.sort((a, b) => {
+      if (!a.next_session_date && !b.next_session_date) return 0;
+      if (!a.next_session_date) return 1;
+      if (!b.next_session_date) return -1;
+      return new Date(a.next_session_date) - new Date(b.next_session_date);
+    });
 
     res.json({
       success: true,
-      data: result.rows.map(workshop => {
-        // Get images array, fallback to single image, then to empty array
-        let images = [];
-        if (workshop.images && Array.isArray(workshop.images) && workshop.images.length > 0) {
-          images = workshop.images;
-        } else if (workshop.image) {
-          images = [workshop.image];
-        }
-        
-        return {
-          ...workshop,
-          price: parseFloat(workshop.price || 0),
-          images: images,
-          image: images[0] || workshop.image || null // Keep image for backward compatibility
-        };
-      })
+      data: workshopsWithSessions
     });
   } catch (error) {
     console.error('Error fetching workshops:', error);
@@ -180,36 +191,36 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get workshop
-    const workshopResult = await pool.query(
-      'SELECT * FROM workshops WHERE id = $1',
-      [id]
-    );
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
-    if (workshopResult.rows.length === 0) {
+    // Get workshop
+    const workshop = await workshopsCollection.findOne({ _id: id });
+
+    if (!workshop) {
       return res.status(404).json({
         success: false,
         message: 'Workshop not found'
       });
     }
 
-    const workshop = workshopResult.rows[0];
-
     // Get sessions
-    const sessionsResult = await pool.query(
-      `SELECT 
-        id,
-        session_date,
-        session_time,
-        capacity,
-        booked_count,
-        (capacity - booked_count) as available_spots,
-        status
-       FROM workshop_sessions
-       WHERE workshop_id = $1 AND status = 'active'
-       ORDER BY session_date, session_time`,
-      [id]
-    );
+    const sessions = await sessionsCollection.find({
+      workshop_id: id,
+      status: 'active'
+    })
+    .sort({ session_date: 1, session_time: 1 })
+    .toArray();
+
+    const sessionsWithSpots = sessions.map(s => ({
+      id: s._id,
+      session_date: s.session_date,
+      session_time: s.session_time,
+      capacity: s.capacity,
+      booked_count: s.booked_count,
+      available_spots: s.capacity - s.booked_count,
+      status: s.status
+    }));
 
     // Get images array, fallback to single image, then to empty array
     let images = [];
@@ -226,7 +237,7 @@ router.get('/:id', async (req, res) => {
         price: parseFloat(workshop.price || 0),
         images: images,
         image: images[0] || workshop.image || null, // Keep image for backward compatibility
-        sessions: sessionsResult.rows
+        sessions: sessionsWithSpots
       }
     });
   } catch (error) {
@@ -254,54 +265,61 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
       });
     }
 
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const reservationsCollection = await getCollection('reservations');
+
     // Get workshop and session
-    const workshopResult = await pool.query('SELECT * FROM workshops WHERE id = $1', [id]);
-    if (workshopResult.rows.length === 0) {
+    const workshop = await workshopsCollection.findOne({ _id: id });
+    if (!workshop) {
       return res.status(404).json({
         success: false,
         message: 'Workshop not found'
       });
     }
-    const workshop = workshopResult.rows[0];
 
-    const sessionResult = await pool.query(
-      'SELECT * FROM workshop_sessions WHERE id = $1 AND workshop_id = $2',
-      [session_id, id]
-    );
-
-    if (sessionResult.rows.length === 0) {
+    const session = await sessionsCollection.findOne({ _id: session_id, workshop_id: id });
+    if (!session) {
       return res.status(404).json({
         success: false,
         message: 'Session not found'
       });
     }
 
-    const session = sessionResult.rows[0];
-
     // Check availability
     const availableSpots = session.capacity - session.booked_count;
     if (availableSpots < quantity) {
       // Check if waitlist is enabled
-      const waitlistResult = await pool.query(
-        `SELECT COUNT(*) as count FROM reservations 
-         WHERE session_id = $1 AND waitlist_position IS NOT NULL`,
-        [session_id]
-      );
-      const waitlistCount = parseInt(waitlistResult.rows[0].count);
+      const waitlistCount = await reservationsCollection.countDocuments({
+        session_id: session_id,
+        waitlist_position: { $ne: null }
+      });
 
       // Add to waitlist
-      const reservationResult = await pool.query(
-        `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone, waitlist_position)
-         VALUES ($1, $2, $3, $4, 'waitlist', $5, $6, $7, $8)
-         RETURNING *`,
-        [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null, waitlistCount + 1]
-      );
+      const reservationData = {
+        workshop_id: id,
+        session_id: session_id,
+        user_id: userId || null,
+        quantity: quantity,
+        status: 'waitlist',
+        guest_name: guest_name || null,
+        guest_email: guest_email || null,
+        guest_phone: guest_phone || null,
+        waitlist_position: waitlistCount + 1,
+        created_at: new Date()
+      };
+
+      const reservationResult = await reservationsCollection.insertOne(reservationData);
+      const reservation = {
+        id: reservationResult.insertedId,
+        ...reservationData
+      };
 
       return res.status(200).json({
         success: true,
         message: 'Ajouté à la liste d\'attente',
         data: {
-          reservation: reservationResult.rows[0],
+          reservation: reservation,
           waitlist: true
         }
       });
@@ -320,42 +338,40 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
 
     // If payment is required, create reservation with "pending" status first, then create Stripe Checkout Session
     if (create_payment_intent && totalPrice > 0) {
-      const client = await pool.connect();
-      
       try {
-        await client.query('BEGIN');
-
         // Create reservation with "pending" status (will be confirmed after payment)
-        const reservationResult = await client.query(
-          `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
-           VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
-           RETURNING *`,
-          [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null]
-        );
+        const reservationData = {
+          workshop_id: id,
+          session_id: session_id,
+          user_id: userId || null,
+          quantity: quantity,
+          status: 'pending',
+          guest_name: guest_name || null,
+          guest_email: guest_email || null,
+          guest_phone: guest_phone || null,
+          created_at: new Date()
+        };
 
-        const reservation = reservationResult.rows[0];
+        const reservationResult = await reservationsCollection.insertOne(reservationData);
+        const reservation = {
+          id: reservationResult.insertedId,
+          ...reservationData
+        };
 
         // Block the slot immediately by incrementing booked_count (so it's grayed out for others)
-        await client.query(
-          `UPDATE workshop_sessions 
-           SET booked_count = booked_count + $1 
-           WHERE id = $2`,
-          [quantity, session_id]
+        await sessionsCollection.updateOne(
+          { _id: session_id },
+          { $inc: { booked_count: quantity } }
         );
 
-        // Create Stripe Checkout Session
-        const { createCheckoutSession } = await import('../services/stripe.js');
+        // Create Square Checkout Link
+        const { createCheckoutLink } = await import('../services/square.js');
         
         const lineItems = [{
-          price_data: {
-            currency: 'eur',
-            product_data: {
-              name: `${workshop.title} - ${quantity} place${quantity > 1 ? 's' : ''}`,
-              description: `Réservation pour la session du ${new Date(session.session_date).toLocaleDateString('fr-FR')} à ${session.session_time}`,
-            },
-            unit_amount: Math.round(totalPrice * 100), // Price in cents
-          },
-          quantity: 1,
+          name: `${workshop.title} - ${quantity} place${quantity > 1 ? 's' : ''}`,
+          description: `Réservation pour la session du ${new Date(session.session_date).toLocaleDateString('fr-FR')} à ${session.session_time}`,
+          quantity: quantity,
+          amount: totalPrice,
         }];
 
         // Get frontend URL - prioritize environment variable, then try to extract from request
@@ -400,7 +416,7 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
         const successUrl = `${frontendUrl}/ateliers?success=true`;
         const cancelUrl = `${frontendUrl}/ateliers?cancelled=true`;
 
-        const stripeSession = await createCheckoutSession(lineItems, successUrl, cancelUrl, {
+        const squareCheckout = await createCheckoutLink(lineItems, successUrl, cancelUrl, {
           type: 'workshop_booking',
           reservation_id: reservation.id.toString(),
           workshop_id: id,
@@ -412,53 +428,70 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
           guest_phone: guest_phone || null,
         });
 
-        if (stripeSession && stripeSession.url) {
-          await client.query('COMMIT');
+        if (squareCheckout && squareCheckout.url) {
           return res.status(200).json({
             success: true,
             message: 'Redirection vers le paiement...',
             data: {
-              checkout_url: stripeSession.url,
-              checkout_session_id: stripeSession.id
+              checkout_url: squareCheckout.url,
+              checkout_session_id: squareCheckout.id
             }
           });
         } else {
-          throw new Error('Stripe session creation failed: no URL returned');
+          // Rollback: delete reservation and revert booked_count
+          await reservationsCollection.deleteOne({ _id: reservation.id });
+          await sessionsCollection.updateOne(
+            { _id: session_id },
+            { $inc: { booked_count: -quantity } }
+          );
+          throw new Error('Square checkout link creation failed: no URL returned');
         }
-      } catch (stripeError) {
-        await client.query('ROLLBACK');
-        console.error('Error creating Stripe checkout session:', stripeError);
+      } catch (squareError) {
+        // Cleanup on error
+        try {
+          if (reservation?.id) {
+            await reservationsCollection.deleteOne({ _id: reservation.id });
+            await sessionsCollection.updateOne(
+              { _id: session_id },
+              { $inc: { booked_count: -quantity } }
+            );
+          }
+        } catch (cleanupError) {
+          console.error('Error cleaning up failed reservation:', cleanupError);
+        }
+        console.error('Error creating Square checkout link:', squareError);
         return res.status(500).json({
           success: false,
-          message: `Erreur lors de la création de la session de paiement: ${stripeError.message}`
+          message: `Erreur lors de la création de la session de paiement: ${squareError.message}`
         });
-      } finally {
-        client.release();
       }
     } else {
       // No payment required - create reservation directly
-      const client = await pool.connect();
-      
       try {
-        await client.query('BEGIN');
-
         // Create reservation
-        const reservationResult = await client.query(
-          `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
-           VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7)
-           RETURNING *`,
-          [id, session_id, userId, quantity, guest_name || null, guest_email || null, guest_phone || null]
-        );
+        const reservationData = {
+          workshop_id: id,
+          session_id: session_id,
+          user_id: userId || null,
+          quantity: quantity,
+          status: 'confirmed',
+          guest_name: guest_name || null,
+          guest_email: guest_email || null,
+          guest_phone: guest_phone || null,
+          created_at: new Date()
+        };
+
+        const reservationResult = await reservationsCollection.insertOne(reservationData);
+        const reservation = {
+          id: reservationResult.insertedId,
+          ...reservationData
+        };
 
         // Update session booked count
-        await client.query(
-          'UPDATE workshop_sessions SET booked_count = booked_count + $1 WHERE id = $2',
-          [quantity, session_id]
+        await sessionsCollection.updateOne(
+          { _id: session_id },
+          { $inc: { booked_count: quantity } }
         );
-
-        await client.query('COMMIT');
-
-        const reservation = reservationResult.rows[0];
 
         // Send confirmation email
         const email = userId ? null : guest_email;
@@ -479,10 +512,19 @@ router.post('/:id/book', optionalAuth, async (req, res) => {
           data: reservation
         });
       } catch (error) {
-        await client.query('ROLLBACK');
+        // Cleanup on error
+        try {
+          if (reservation?.id) {
+            await reservationsCollection.deleteOne({ _id: reservation.id });
+            await sessionsCollection.updateOne(
+              { _id: session_id },
+              { $inc: { booked_count: -quantity } }
+            );
+          }
+        } catch (cleanupError) {
+          console.error('Error cleaning up failed reservation:', cleanupError);
+        }
         throw error;
-      } finally {
-        client.release();
       }
     }
   } catch (error) {

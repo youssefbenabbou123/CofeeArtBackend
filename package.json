@@ -25,7 +25,9 @@
     "add-gobelet-isotherme": "node scripts/add-gobelet-isotherme.js",
     "run-migration-016": "node scripts/run-migration-016.js",
     "run-migration-017": "node scripts/run-migration-017.js",
-    "fix-gobelet-product": "node scripts/fix-gobelet-product.js"
+    "fix-gobelet-product": "node scripts/fix-gobelet-product.js",
+    "migrate-to-mongodb": "node migrate-to-mongodb.js",
+    "test-mongodb": "node test-mongodb-connection.js"
   },
   "keywords": [
     "express",
@@ -46,9 +48,10 @@
     "express-validator": "^7.0.1",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "mongodb": "^7.0.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",
     "pg": "^8.11.3",
-    "stripe": "^20.0.0"
+    "square": "^43.2.1"
   }
 }

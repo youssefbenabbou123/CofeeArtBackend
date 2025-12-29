@@ -1,5 +1,5 @@
 import express from 'express';
-import pool from '../../db.js';
+import { getCollection } from '../../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../../middleware/auth.js';
 import crypto from 'crypto';
 
@@ -24,66 +24,50 @@ router.get('/', async (req, res) => {
   try {
     const { status, search } = req.query;
 
-    // Check if new columns exist
-    const columnCheck = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'gift_cards' AND column_name = 'used'
-    `);
-    const hasNewColumns = columnCheck.rows.length > 0;
+    const giftCardsCollection = await getCollection('gift_cards');
+    
+    const query = {};
+    if (status) query.status = status;
+    if (search) query.code = { $regex: search, $options: 'i' };
 
-    let query = 'SELECT * FROM gift_cards WHERE 1=1';
-    const params = [];
-    let paramCount = 1;
-
-    if (status) {
-      query += ` AND status = $${paramCount++}`;
-      params.push(status);
+    // Check for expired cards and update them
+    try {
+      await giftCardsCollection.updateMany(
+        {
+          expiry_date: { $lt: new Date() },
+          status: 'active',
+          used: { $ne: true }
+        },
+        {
+          $set: {
+            status: 'expired',
+            used: true
+          }
+        }
+      );
+    } catch (error) {
+      console.warn('Could not update expired cards:', error.message);
     }
 
-    if (search) {
-      query += ` AND code ILIKE $${paramCount++}`;
-      params.push(`%${search}%`);
-    }
-
-    query += ' ORDER BY created_at DESC';
-
-    const result = await pool.query(query, params);
-
-    // Check for expired cards (only if new columns exist)
-    if (hasNewColumns) {
-      try {
-        await pool.query(`
-          UPDATE gift_cards
-          SET status = 'expired', used = true
-          WHERE expiry_date < CURRENT_DATE
-            AND status = 'active'
-            AND used = false
-        `);
-      } catch (error) {
-        console.warn('Could not update expired cards:', error.message);
-      }
-    }
+    const cards = await giftCardsCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
     res.json({
       success: true,
-      data: result.rows.map(card => {
+      data: cards.map(card => {
         const expiryDate = card.expiry_date ? new Date(card.expiry_date) : null;
         const isExpired = expiryDate && expiryDate < new Date();
-        
-        // Handle both old and new schema
-        const cardUsed = hasNewColumns ? (card.used || false) : false;
-        const cardStatus = isExpired ? 'expired' : (hasNewColumns && cardUsed ? 'used' : card.status || 'active');
+        const cardUsed = card.used || false;
+        const cardStatus = isExpired ? 'expired' : (cardUsed ? 'used' : card.status || 'active');
         
         return {
+          id: card._id,
           ...card,
           amount: parseFloat(card.amount || 0),
           balance: parseFloat(card.balance || 0),
           status: cardStatus,
-          used: cardUsed,
-          category: hasNewColumns ? (card.category || null) : null,
-          purchaser_email: hasNewColumns ? (card.purchaser_email || null) : null,
-          purchaser_name: hasNewColumns ? (card.purchaser_name || null) : null
+          used: cardUsed
         };
       })
     });
@@ -102,13 +86,14 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get gift card
-    const cardResult = await pool.query(
-      'SELECT * FROM gift_cards WHERE id = $1',
-      [id]
-    );
+    const giftCardsCollection = await getCollection('gift_cards');
+    const transactionsCollection = await getCollection('gift_card_transactions');
+    const ordersCollection = await getCollection('orders');
 
-    if (cardResult.rows.length === 0) {
+    // Get gift card
+    const card = await giftCardsCollection.findOne({ _id: id });
+
+    if (!card) {
       return res.status(404).json({
         success: false,
         message: 'Carte cadeau non trouvée'
@@ -116,24 +101,27 @@ router.get('/:id', async (req, res) => {
     }
 
     // Get transactions
-    const transactionsResult = await pool.query(
-      `SELECT 
-        t.*,
-        o.id as order_id
-       FROM gift_card_transactions t
-       LEFT JOIN orders o ON t.order_id = o.id
-       WHERE t.gift_card_id = $1
-       ORDER BY t.created_at DESC`,
-      [id]
-    );
+    const transactions = await transactionsCollection.find({ gift_card_id: id })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    const transactionsWithOrders = await Promise.all(transactions.map(async (t) => {
+      const order = t.order_id ? await ordersCollection.findOne({ _id: t.order_id }) : null;
+      return {
+        id: t._id,
+        ...t,
+        order_id: order?._id || null
+      };
+    }));
 
     res.json({
       success: true,
       data: {
-        ...cardResult.rows[0],
-        amount: parseFloat(cardResult.rows[0].amount || 0),
-        balance: parseFloat(cardResult.rows[0].balance || 0),
-        transactions: transactionsResult.rows
+        id: card._id,
+        ...card,
+        amount: parseFloat(card.amount || 0),
+        balance: parseFloat(card.balance || 0),
+        transactions: transactionsWithOrders
       }
     });
   } catch (error) {
@@ -158,40 +146,53 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const giftCardsCollection = await getCollection('gift_cards');
+    const transactionsCollection = await getCollection('gift_card_transactions');
+
     // Generate unique code
     let code;
     let attempts = 0;
     do {
       code = generateGiftCardCode();
-      const existing = await pool.query('SELECT id FROM gift_cards WHERE code = $1', [code]);
-      if (existing.rows.length === 0) break;
+      const existing = await giftCardsCollection.findOne({ code: code });
+      if (!existing) break;
       attempts++;
       if (attempts > 10) {
         throw new Error('Impossible de générer un code unique');
       }
     } while (true);
 
-    const result = await pool.query(
-      `INSERT INTO gift_cards (code, amount, balance, expiry_date)
-       VALUES ($1, $2, $2, $3)
-       RETURNING *`,
-      [code, amount, expiry_date || null]
-    );
+    const cardData = {
+      code: code,
+      amount: parseFloat(amount),
+      balance: parseFloat(amount),
+      expiry_date: expiry_date ? new Date(expiry_date) : null,
+      status: 'active',
+      used: false,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    const result = await giftCardsCollection.insertOne(cardData);
+    const cardId = result.insertedId;
 
     // Create purchase transaction
-    await pool.query(
-      `INSERT INTO gift_card_transactions (gift_card_id, amount, transaction_type, notes)
-       VALUES ($1, $2, 'purchase', 'Carte cadeau créée')`,
-      [result.rows[0].id, amount]
-    );
+    await transactionsCollection.insertOne({
+      gift_card_id: cardId,
+      amount: parseFloat(amount),
+      transaction_type: 'purchase',
+      notes: 'Carte cadeau créée',
+      created_at: new Date()
+    });
 
     res.status(201).json({
       success: true,
       message: 'Carte cadeau créée avec succès',
       data: {
-        ...result.rows[0],
-        amount: parseFloat(result.rows[0].amount),
-        balance: parseFloat(result.rows[0].balance)
+        id: cardId,
+        ...cardData,
+        amount: parseFloat(amount),
+        balance: parseFloat(amount)
       }
     });
   } catch (error) {
@@ -210,54 +211,44 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { amount, balance, expiry_date, status } = req.body;
 
-    const updates = [];
-    const values = [];
-    let paramCount = 1;
+    const giftCardsCollection = await getCollection('gift_cards');
+    
+    const updateData = {};
+    if (amount !== undefined) updateData.amount = parseFloat(amount);
+    if (balance !== undefined) updateData.balance = parseFloat(balance);
+    if (expiry_date !== undefined) updateData.expiry_date = expiry_date ? new Date(expiry_date) : null;
+    if (status !== undefined) updateData.status = status;
 
-    if (amount !== undefined) {
-      updates.push(`amount = $${paramCount++}`);
-      values.push(amount);
-    }
-    if (balance !== undefined) {
-      updates.push(`balance = $${paramCount++}`);
-      values.push(balance);
-    }
-    if (expiry_date !== undefined) {
-      updates.push(`expiry_date = $${paramCount++}`);
-      values.push(expiry_date);
-    }
-    if (status !== undefined) {
-      updates.push(`status = $${paramCount++}`);
-      values.push(status);
-    }
-
-    if (updates.length === 0) {
+    if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Aucune donnée à mettre à jour'
       });
     }
 
-    updates.push('updated_at = NOW()');
-    values.push(id);
-    const query = `UPDATE gift_cards SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
+    updateData.updated_at = new Date();
 
-    const result = await pool.query(query, values);
+    const result = await giftCardsCollection.updateOne(
+      { _id: id },
+      { $set: updateData }
+    );
 
-    if (result.rows.length === 0) {
+    if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
         message: 'Carte cadeau non trouvée'
       });
     }
 
+    const updated = await giftCardsCollection.findOne({ _id: id });
     res.json({
       success: true,
       message: 'Carte cadeau mise à jour',
       data: {
-        ...result.rows[0],
-        amount: parseFloat(result.rows[0].amount || 0),
-        balance: parseFloat(result.rows[0].balance || 0)
+        id: updated._id,
+        ...updated,
+        amount: parseFloat(updated.amount || 0),
+        balance: parseFloat(updated.balance || 0)
       }
     });
   } catch (error) {
@@ -275,12 +266,10 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      'DELETE FROM gift_cards WHERE id = $1 RETURNING id',
-      [id]
-    );
+    const giftCardsCollection = await getCollection('gift_cards');
+    const result = await giftCardsCollection.deleteOne({ _id: id });
 
-    if (result.rows.length === 0) {
+    if (result.deletedCount === 0) {
       return res.status(404).json({
         success: false,
         message: 'Carte cadeau non trouvée'
@@ -306,19 +295,15 @@ router.get('/check/:code', async (req, res) => {
   try {
     const { code } = req.params;
 
-    const result = await pool.query(
-      'SELECT code, balance, expiry_date, status FROM gift_cards WHERE code = $1',
-      [code.toUpperCase()]
-    );
+    const giftCardsCollection = await getCollection('gift_cards');
+    const card = await giftCardsCollection.findOne({ code: code.toUpperCase() });
 
-    if (result.rows.length === 0) {
+    if (!card) {
       return res.status(404).json({
         success: false,
         message: 'Carte cadeau non trouvée'
       });
     }
-
-    const card = result.rows[0];
 
     // Check if expired
     if (card.expiry_date && new Date(card.expiry_date) < new Date()) {

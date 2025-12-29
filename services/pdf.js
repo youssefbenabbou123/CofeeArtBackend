@@ -52,9 +52,10 @@ export async function generateInvoicePDF(orderData) {
             doc.text(`Méthode: ${orderData.payment_method}`, 400, paymentY, { align: 'right' });
             paymentY += 15;
          }
-         if (orderData.stripe_payment_intent_id) {
+         if (orderData.square_payment_id || orderData.stripe_payment_intent_id) {
+            const paymentId = orderData.square_payment_id || orderData.stripe_payment_intent_id;
             doc.fontSize(8)
-               .text(`ID Transaction: ${orderData.stripe_payment_intent_id.substring(0, 20)}...`, 400, paymentY, { align: 'right' });
+              .text(`ID Transaction: ${paymentId.substring(0, 20)}...`, 400, paymentY, { align: 'right' });
          }
 
          // Customer info
@@ -130,8 +131,9 @@ export async function generateInvoicePDF(orderData) {
                doc.text(`Méthode de paiement: ${orderData.payment_method}`, 50, paymentSectionY);
                paymentSectionY += 15;
             }
-            if (orderData.stripe_payment_intent_id) {
-               doc.text(`Transaction ID: ${orderData.stripe_payment_intent_id}`, 50, paymentSectionY);
+            if (orderData.square_payment_id || orderData.stripe_payment_intent_id) {
+               const paymentId = orderData.square_payment_id || orderData.stripe_payment_intent_id;
+               doc.text(`Transaction ID: ${paymentId}`, 50, paymentSectionY);
                paymentSectionY += 15;
             }
             doc.text(`Statut: Payé`, 50, paymentSectionY);

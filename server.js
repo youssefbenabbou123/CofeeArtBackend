@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import helmet from 'helmet';
-import pool, { testConnection } from './db.js';
+import { connectToMongoDB } from './db-mongodb.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 import productsRouter from './routes/products.js';
 import authRouter from './routes/auth.js';
@@ -17,17 +17,18 @@ import adminWorkshopsRouter from './routes/admin/workshops.js';
 import adminClientsRouter from './routes/admin/clients.js';
 import adminGiftCardsRouter from './routes/admin/gift-cards.js';
 import giftCardsRouter from './routes/gift-cards.js';
-import stripeRouter from './routes/stripe.js';
-import stripeWebhookRouter from './routes/stripe-webhook.js';
+import squareRouter from './routes/square.js';
 
 dotenv.config();
 
-// Log Stripe configuration status on startup
-if (process.env.STRIPE_SECRET_KEY) {
-  console.log('✅ Stripe Secret Key is configured');
+// Log Square configuration status on startup
+const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl9UEyMZ8UQ0EuKqWOkS4rt_vgJ5H7H9CBHruBXSnDOBtcu53FmG_z7ji1vP7';
+const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+if (accessToken && applicationId) {
+  console.log('✅ Square credentials are configured');
 } else {
-  console.warn('⚠️  STRIPE_SECRET_KEY is not set. Payment functionality will be disabled.');
-  console.warn('   Please add STRIPE_SECRET_KEY to your .env file and restart the server.');
+  console.warn('⚠️  Square credentials are not set. Payment functionality will be disabled.');
+  console.warn('   Please add SQUARE_ACCESS_TOKEN and SQUARE_APPLICATION_ID to your .env file and restart the server.');
 }
 
 const app = express();
@@ -125,14 +126,15 @@ app.use('/api/', apiLimiter);
 // ---------------- HEALTH CHECK & DATABASE TEST ---------------- //
 app.get('/', async (req, res) => {
   try {
-    const dbTest = await testConnection();
+    const db = await connectToMongoDB();
     res.json({
       message: 'Coffee Arts Paris Backend API',
       status: 'running',
       timestamp: new Date(),
       database: {
-        connected: dbTest.connected,
-        timestamp: dbTest.now
+        connected: true,
+        type: 'MongoDB Atlas',
+        database: db.databaseName
       }
     });
   } catch (error) {
@@ -151,16 +153,21 @@ app.get('/', async (req, res) => {
 // Database test endpoint
 app.get('/test-db', async (req, res) => {
   try {
-    const result = await testConnection();
+    const db = await connectToMongoDB();
+    const collections = await db.listCollections().toArray();
     res.json({
       success: true,
-      message: 'Database connection successful',
-      data: result
+      message: 'MongoDB connection successful',
+      data: {
+        connected: true,
+        database: db.databaseName,
+        collections: collections.map(c => c.name)
+      }
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Database connection failed',
+      message: 'MongoDB connection failed',
       error: error.message
     });
   }
@@ -180,9 +187,7 @@ app.use('/api/admin/workshops', adminWorkshopsRouter);
 app.use('/api/admin/clients', adminClientsRouter);
 app.use('/api/admin/gift-cards', adminGiftCardsRouter);
 app.use('/api/gift-cards', giftCardsRouter);
-app.use('/api/stripe', stripeRouter);
-app.use('/api/stripe', stripeWebhookRouter);
-app.use('/api/stripe', stripeWebhookRouter);
+app.use('/api/square', squareRouter);
 
 // ---------------- ERROR HANDLING ---------------- //
 app.use((err, req, res, next) => {
@@ -220,16 +225,16 @@ app.listen(PORT, () => {
   console.log(`🚀 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 Health check: http://localhost:${PORT}/`);
   console.log(`🚀 Database test: http://localhost:${PORT}/test-db`);
-  console.log(`🚀 Stripe config: http://localhost:${PORT}/api/stripe/check-config`);
+  console.log(`🚀 Square config: http://localhost:${PORT}/api/square/check-config`);
   console.log('🚀 ========================================');
   console.log('');
   
-  // Final check of Stripe configuration
-  if (process.env.STRIPE_SECRET_KEY) {
-    console.log('✅ Stripe is configured and ready for payments');
+  // Final check of Square configuration
+  if (accessToken && applicationId) {
+    console.log('✅ Square is configured and ready for payments');
   } else {
-    console.log('⚠️  WARNING: Stripe is NOT configured');
-    console.log('   Add STRIPE_SECRET_KEY to your .env file to enable payments');
+    console.log('⚠️  WARNING: Square is NOT configured');
+    console.log('   Add SQUARE_ACCESS_TOKEN and SQUARE_APPLICATION_ID to your .env file to enable payments');
   }
   console.log('');
 });

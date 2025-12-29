@@ -1,8 +1,8 @@
 import express from 'express';
-import pool from '../../db.js';
+import { getCollection } from '../../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../../middleware/auth.js';
 import { generateInvoicePDF } from '../../services/pdf.js';
-import { processRefund } from '../../services/stripe.js';
+import { processRefund } from '../../services/square.js';
 
 const router = express.Router();
 
@@ -15,63 +15,51 @@ router.get('/', async (req, res) => {
   try {
     const { status, payment_status, start_date, end_date, search } = req.query;
 
-    let query = `
-      SELECT 
-        o.id,
-        o.user_id,
-        o.guest_name,
-        o.guest_email,
-        o.total,
-        o.status,
-        o.payment_status,
-        o.payment_method,
-        o.shipping_method,
-        o.created_at,
-        COUNT(oi.id) as item_count
-      FROM orders o
-      LEFT JOIN order_items oi ON o.id = oi.order_id
-      WHERE 1=1
-    `;
-    const params = [];
-    let paramCount = 1;
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
 
-    if (status) {
-      query += ` AND o.status = $${paramCount++}`;
-      params.push(status);
+    // Build MongoDB query
+    const query = {};
+    if (status) query.status = status;
+    if (payment_status) query.payment_status = payment_status;
+    if (start_date || end_date) {
+      query.created_at = {};
+      if (start_date) query.created_at.$gte = new Date(start_date);
+      if (end_date) query.created_at.$lte = new Date(end_date);
     }
-
-    if (payment_status) {
-      query += ` AND o.payment_status = $${paramCount++}`;
-      params.push(payment_status);
-    }
-
-    if (start_date) {
-      query += ` AND o.created_at >= $${paramCount++}`;
-      params.push(start_date);
-    }
-
-    if (end_date) {
-      query += ` AND o.created_at <= $${paramCount++}`;
-      params.push(end_date);
-    }
-
     if (search) {
-      query += ` AND (
-        o.guest_name ILIKE $${paramCount} OR 
-        o.guest_email ILIKE $${paramCount} OR
-        o.id::text ILIKE $${paramCount}
-      )`;
-      params.push(`%${search}%`);
-      paramCount++;
+      query.$or = [
+        { guest_name: { $regex: search, $options: 'i' } },
+        { guest_email: { $regex: search, $options: 'i' } },
+        { _id: { $regex: search, $options: 'i' } }
+      ];
     }
 
-    query += ` GROUP BY o.id ORDER BY o.created_at DESC`;
+    const orders = await ordersCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
-    const result = await pool.query(query, params);
+    // Get item counts for each order
+    const ordersWithCounts = await Promise.all(orders.map(async (order) => {
+      const itemCount = await orderItemsCollection.countDocuments({ order_id: order._id });
+      return {
+        id: order._id,
+        user_id: order.user_id,
+        guest_name: order.guest_name,
+        guest_email: order.guest_email,
+        total: order.total,
+        status: order.status,
+        payment_status: order.payment_status,
+        payment_method: order.payment_method,
+        shipping_method: order.shipping_method,
+        created_at: order.created_at,
+        item_count: itemCount
+      };
+    }));
 
     res.json({
       success: true,
-      data: result.rows
+      data: ordersWithCounts
     });
   } catch (error) {
     console.error('Error fetching orders:', error);
@@ -88,41 +76,40 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get order
-    const orderResult = await pool.query(
-      'SELECT * FROM orders WHERE id = $1',
-      [id]
-    );
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
+    const productsCollection = await getCollection('products');
 
-    if (orderResult.rows.length === 0) {
+    // Get order
+    const order = await ordersCollection.findOne({ _id: id });
+
+    if (!order) {
       return res.status(404).json({
         success: false,
         message: 'Commande non trouvée'
       });
     }
 
-    const order = orderResult.rows[0];
-
     // Get order items with product details
-    const itemsResult = await pool.query(
-      `SELECT 
-        oi.id,
-        oi.quantity,
-        oi.price,
-        p.id as product_id,
-        p.title,
-        p.image
-       FROM order_items oi
-       LEFT JOIN products p ON oi.product_id = p.id
-       WHERE oi.order_id = $1`,
-      [id]
-    );
+    const orderItems = await orderItemsCollection.find({ order_id: id }).toArray();
+    const items = await Promise.all(orderItems.map(async (oi) => {
+      const product = await productsCollection.findOne({ _id: oi.product_id });
+      return {
+        id: oi._id,
+        quantity: oi.quantity,
+        price: oi.price,
+        product_id: oi.product_id,
+        title: product?.title || null,
+        image: product?.image || null
+      };
+    }));
 
     res.json({
       success: true,
       data: {
+        id: order._id,
         ...order,
-        items: itemsResult.rows
+        items: items
       }
     });
   } catch (error) {
@@ -156,40 +143,34 @@ router.put('/:id/status', async (req, res) => {
       });
     }
 
-    // Check if updated_at column exists, if not, just update status
-    let result;
-    try {
-      // Try with updated_at first
-      result = await pool.query(
-        'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-        [status, id]
-      );
-    } catch (err) {
-      // If updated_at doesn't exist, update without it
-      if (err.message && err.message.includes('updated_at')) {
-        console.log('updated_at column not found, updating without it');
-        result = await pool.query(
-          'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
-          [status, id]
-        );
-      } else {
-        throw err;
+    const ordersCollection = await getCollection('orders');
+    const result = await ordersCollection.updateOne(
+      { _id: id },
+      {
+        $set: {
+          status: status,
+          updated_at: new Date()
+        }
       }
-    }
+    );
 
-    if (result.rows.length === 0) {
+    if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
         message: 'Commande non trouvée'
       });
     }
 
+    const updatedOrder = await ordersCollection.findOne({ _id: id });
     console.log(`✅ Order ${id} status updated to: ${status}`);
 
     res.json({
       success: true,
       message: 'Statut de la commande mis à jour',
-      data: result.rows[0]
+      data: {
+        id: updatedOrder._id,
+        ...updatedOrder
+      }
     });
   } catch (error) {
     console.error('Error updating order status:', error);
@@ -212,41 +193,40 @@ router.put('/:id/refund', async (req, res) => {
     const { id } = req.params;
     const { amount, reason } = req.body;
 
+    const ordersCollection = await getCollection('orders');
+    
     // Get order
-    const orderResult = await pool.query(
-      'SELECT * FROM orders WHERE id = $1',
-      [id]
-    );
+    const order = await ordersCollection.findOne({ _id: id });
 
-    if (orderResult.rows.length === 0) {
+    if (!order) {
       return res.status(404).json({
         success: false,
         message: 'Commande non trouvée'
       });
     }
-
-    const order = orderResult.rows[0];
     const refundAmount = amount || parseFloat(order.total);
 
-    // Process Stripe refund if payment was made via Stripe
-    if (order.stripe_payment_intent_id) {
+    // Process Square refund if payment was made via Square
+    if (order.square_payment_id) {
       try {
         const refundResult = await processRefund(
-          order.stripe_payment_intent_id,
+          order.square_payment_id,
           refundAmount,
-          reason || 'requested_by_customer'
+          reason || 'REQUESTED_BY_CUSTOMER'
         );
 
         // Update order
-        await pool.query(
-          `UPDATE orders 
-           SET refund_amount = $1, 
-               refund_reason = $2, 
-               refunded_at = NOW(),
-               status = 'refunded',
-               payment_status = 'refunded'
-           WHERE id = $3`,
-          [refundAmount, reason, id]
+        await ordersCollection.updateOne(
+          { _id: id },
+          {
+            $set: {
+              refund_amount: refundAmount,
+              refund_reason: reason,
+              refunded_at: new Date(),
+              status: 'refunded',
+              payment_status: 'refunded'
+            }
+          }
         );
 
         res.json({
@@ -257,23 +237,25 @@ router.put('/:id/refund', async (req, res) => {
             amount: refundAmount
           }
         });
-      } catch (stripeError) {
+      } catch (squareError) {
         return res.status(500).json({
           success: false,
-          message: 'Erreur lors du remboursement Stripe',
-          error: stripeError.message
+          message: 'Erreur lors du remboursement Square',
+          error: squareError.message
         });
       }
     } else {
       // Manual refund (no Stripe)
-      await pool.query(
-        `UPDATE orders 
-         SET refund_amount = $1, 
-             refund_reason = $2, 
-             refunded_at = NOW(),
-             status = 'refunded'
-         WHERE id = $3`,
-        [refundAmount, reason, id]
+      await ordersCollection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            refund_amount: refundAmount,
+            refund_reason: reason,
+            refunded_at: new Date(),
+            status: 'refunded'
+          }
+        }
       );
 
       res.json({
@@ -297,43 +279,41 @@ router.get('/:id/invoice', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get order with items
-    const orderResult = await pool.query(
-      'SELECT * FROM orders WHERE id = $1',
-      [id]
-    );
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
+    const productsCollection = await getCollection('products');
 
-    if (orderResult.rows.length === 0) {
+    // Get order with items
+    const order = await ordersCollection.findOne({ _id: id });
+
+    if (!order) {
       return res.status(404).json({
         success: false,
         message: 'Commande non trouvée'
       });
     }
 
-    const order = orderResult.rows[0];
-
     // Get order items
-    const itemsResult = await pool.query(
-      `SELECT 
-        oi.quantity,
-        oi.price,
-        p.title
-       FROM order_items oi
-       LEFT JOIN products p ON oi.product_id = p.id
-       WHERE oi.order_id = $1`,
-      [id]
-    );
+    const orderItems = await orderItemsCollection.find({ order_id: id }).toArray();
+    const items = await Promise.all(orderItems.map(async (oi) => {
+      const product = await productsCollection.findOne({ _id: oi.product_id });
+      return {
+        quantity: oi.quantity,
+        price: oi.price,
+        title: product?.title || null
+      };
+    }));
 
     const orderData = {
       ...order,
       orderId: order.id, // Add orderId for PDF compatibility
       createdAt: order.created_at, // Add createdAt for PDF compatibility
-      items: itemsResult.rows,
+      items: items,
       customerName: order.guest_name,
       customerEmail: order.guest_email,
       payment_status: order.payment_status,
       payment_method: order.payment_method,
-      stripe_payment_intent_id: order.stripe_payment_intent_id
+      square_payment_id: order.square_payment_id
     };
 
     // Generate PDF
@@ -357,36 +337,35 @@ router.get('/export/csv', async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
 
-    let query = `
-      SELECT 
-        o.id,
-        o.guest_name as customer_name,
-        o.guest_email as customer_email,
-        o.total,
-        o.status,
-        o.payment_status,
-        o.created_at,
-        COUNT(oi.id) as item_count
-      FROM orders o
-      LEFT JOIN order_items oi ON o.id = oi.order_id
-      WHERE 1=1
-    `;
-    const params = [];
-    let paramCount = 1;
+    const ordersCollection = await getCollection('orders');
+    const orderItemsCollection = await getCollection('order_items');
 
-    if (start_date) {
-      query += ` AND o.created_at >= $${paramCount++}`;
-      params.push(start_date);
+    const query = {};
+    if (start_date || end_date) {
+      query.created_at = {};
+      if (start_date) query.created_at.$gte = new Date(start_date);
+      if (end_date) query.created_at.$lte = new Date(end_date);
     }
 
-    if (end_date) {
-      query += ` AND o.created_at <= $${paramCount++}`;
-      params.push(end_date);
-    }
+    const orders = await ordersCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
-    query += ` GROUP BY o.id ORDER BY o.created_at DESC`;
+    const ordersWithCounts = await Promise.all(orders.map(async (order) => {
+      const itemCount = await orderItemsCollection.countDocuments({ order_id: order._id });
+      return {
+        id: order._id,
+        customer_name: order.guest_name,
+        customer_email: order.guest_email,
+        total: order.total,
+        status: order.status,
+        payment_status: order.payment_status,
+        created_at: order.created_at,
+        item_count: itemCount
+      };
+    }));
 
-    const result = await pool.query(query, params);
+    const result = { rows: ordersWithCounts };
 
     // Create CSV manually with proper formatting
     const headers = ['ID', 'Nom client', 'Email', 'Total', 'Statut', 'Statut paiement', 'Nb articles', 'Date'];

@@ -1,5 +1,5 @@
 import express from 'express';
-import { createPaymentIntent } from '../services/stripe.js';
+import { createPayment, getLocationId } from '../services/square.js';
 import { getCollection } from '../db-mongodb.js';
 import dotenv from 'dotenv';
 
@@ -7,44 +7,46 @@ dotenv.config();
 
 const router = express.Router();
 
-// GET /api/stripe/check-config
-// Check if Stripe is configured
+// GET /api/square/check-config
+// Check if Square is configured
 router.get('/check-config', (req, res) => {
-    const stripeKey = process.env.STRIPE_SECRET_KEY;
-    const hasSecretKey = !!stripeKey;
+    const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl9UEyMZ8UQ0EuKqWOkS4rt_vgJ5H7H9CBHruBXSnDOBtcu53FmG_z7ji1vP7';
+    const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+    const hasAccessToken = !!accessToken;
+    const hasApplicationId = !!applicationId;
     let configured = false;
-    let keyType = null;
+    let environment = process.env.SQUARE_ENVIRONMENT || 'sandbox';
     let error = null;
 
-    if (hasSecretKey) {
-        if (stripeKey.startsWith('sk_test_')) {
-            configured = true;
-            keyType = 'test';
-        } else if (stripeKey.startsWith('sk_live_')) {
-            configured = true;
-            keyType = 'live';
-        } else {
-            error = 'Invalid key format. Must start with sk_test_ or sk_live_';
-        }
+    if (hasAccessToken && hasApplicationId) {
+        configured = true;
     } else {
-        error = 'STRIPE_SECRET_KEY not set';
+        error = 'SQUARE_ACCESS_TOKEN or SQUARE_APPLICATION_ID not set';
     }
 
     res.json({
         success: true,
         configured: configured,
-        hasSecretKey: hasSecretKey,
-        keyType: keyType,
-        keyPrefix: hasSecretKey ? stripeKey.substring(0, 20) + '...' : null,
+        hasAccessToken: hasAccessToken,
+        hasApplicationId: hasApplicationId,
+        environment: environment,
+        applicationIdPrefix: hasApplicationId ? applicationId.substring(0, 20) + '...' : null,
         error: error
     });
 });
 
-// POST /api/stripe/create-payment-intent
-// Creates a Stripe payment intent for the checkout
-router.post('/create-payment-intent', async (req, res) => {
+// POST /api/square/create-payment
+// Creates a Square payment
+router.post('/create-payment', async (req, res) => {
     try {
-        const { amount, currency = 'eur', metadata = {} } = req.body;
+        const { sourceId, amount, currency = 'EUR', idempotencyKey, metadata = {} } = req.body;
+
+        if (!sourceId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Source ID is required'
+            });
+        }
 
         if (!amount || amount <= 0) {
             return res.status(400).json({
@@ -53,15 +55,22 @@ router.post('/create-payment-intent', async (req, res) => {
             });
         }
 
-        const result = await createPaymentIntent(amount, currency, metadata);
+        if (!idempotencyKey) {
+            return res.status(400).json({
+                success: false,
+                message: 'Idempotency key is required'
+            });
+        }
+
+        const result = await createPayment(sourceId, amount, currency, idempotencyKey, metadata);
 
         res.json({
             success: true,
-            clientSecret: result.clientSecret,
-            paymentIntentId: result.paymentIntentId
+            paymentId: result.paymentId,
+            status: result.status
         });
     } catch (error) {
-        console.error('Error creating payment intent:', error);
+        console.error('Error creating payment:', error);
         res.status(500).json({
             success: false,
             message: error.message || 'Erreur lors de la création du paiement'
@@ -69,13 +78,13 @@ router.post('/create-payment-intent', async (req, res) => {
     }
 });
 
-// POST /api/stripe/confirm-payment
+// POST /api/square/confirm-payment
 // Updates order status after successful payment
 router.post('/confirm-payment', async (req, res) => {
     try {
-        const { orderId, paymentIntentId } = req.body;
+        const { orderId, paymentId } = req.body;
 
-        if (!orderId || !paymentIntentId) {
+        if (!orderId || !paymentId) {
             return res.status(400).json({
                 success: false,
                 message: 'Données manquantes'
@@ -89,8 +98,8 @@ router.post('/confirm-payment', async (req, res) => {
             {
                 $set: {
                     payment_status: 'paid',
-                    stripe_payment_intent_id: paymentIntentId,
-                    payment_method: 'Stripe',
+                    square_payment_id: paymentId,
+                    payment_method: 'Square',
                     status: 'confirmed',
                     updated_at: new Date()
                 }
@@ -113,3 +122,4 @@ router.post('/confirm-payment', async (req, res) => {
 });
 
 export default router;
+

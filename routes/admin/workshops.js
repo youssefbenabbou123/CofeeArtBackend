@@ -1,5 +1,5 @@
 import express from 'express';
-import pool from '../../db.js';
+import { getCollection } from '../../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../../middleware/auth.js';
 import { sendWorkshopCancellation } from '../../services/email.js';
 
@@ -11,41 +11,36 @@ router.use(requireAdmin);
 
 // DELETE /api/admin/workshops/all - Delete all workshops (admin only)
 router.delete('/all', async (req, res) => {
-  const client = await pool.connect();
-  
   try {
-    await client.query('BEGIN');
+    const reservationsCollection = await getCollection('reservations');
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const workshopsCollection = await getCollection('workshops');
     
-    // Delete reservations first (foreign key constraint)
-    const reservationsResult = await client.query('DELETE FROM reservations RETURNING id');
+    // Delete reservations first
+    const reservationsResult = await reservationsCollection.deleteMany({});
     
     // Delete workshop sessions
-    const sessionsResult = await client.query('DELETE FROM workshop_sessions RETURNING id');
+    const sessionsResult = await sessionsCollection.deleteMany({});
     
     // Delete workshops
-    const workshopsResult = await client.query('DELETE FROM workshops RETURNING id');
-    
-    await client.query('COMMIT');
+    const workshopsResult = await workshopsCollection.deleteMany({});
     
     res.json({
       success: true,
       message: 'Tous les ateliers ont été supprimés',
       data: {
-        workshopsDeleted: workshopsResult.rowCount,
-        sessionsDeleted: sessionsResult.rowCount,
-        reservationsDeleted: reservationsResult.rowCount
+        workshopsDeleted: workshopsResult.deletedCount,
+        sessionsDeleted: sessionsResult.deletedCount,
+        reservationsDeleted: reservationsResult.deletedCount
       }
     });
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('Error deleting all workshops:', error);
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression des ateliers',
       ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
-  } finally {
-    client.release();
   }
 });
 
@@ -54,27 +49,20 @@ router.get('/', async (req, res) => {
   try {
     const { status, level } = req.query;
 
-    let query = 'SELECT * FROM workshops WHERE 1=1';
-    const params = [];
-    let paramCount = 1;
+    const workshopsCollection = await getCollection('workshops');
+    
+    const query = {};
+    if (status) query.status = status;
+    if (level) query.level = level;
 
-    if (status) {
-      query += ` AND status = $${paramCount++}`;
-      params.push(status);
-    }
-
-    if (level) {
-      query += ` AND level = $${paramCount++}`;
-      params.push(level);
-    }
-
-    query += ' ORDER BY created_at DESC';
-
-    const result = await pool.query(query, params);
+    const workshops = await workshopsCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
     res.json({
       success: true,
-      data: result.rows.map(workshop => ({
+      data: workshops.map(workshop => ({
+        id: workshop._id,
         ...workshop,
         price: parseFloat(workshop.price || 0)
       }))
@@ -94,56 +82,57 @@ router.get('/:id/reservations', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verify workshop exists
-    const workshopCheck = await pool.query(
-      'SELECT id, title FROM workshops WHERE id = $1',
-      [id]
-    );
+    const workshopsCollection = await getCollection('workshops');
+    const reservationsCollection = await getCollection('reservations');
+    const usersCollection = await getCollection('users');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
-    if (workshopCheck.rows.length === 0) {
+    // Verify workshop exists
+    const workshop = await workshopsCollection.findOne({ _id: id });
+
+    if (!workshop) {
       return res.status(404).json({
         success: false,
         message: 'Atelier non trouvé'
       });
     }
 
-    // Get all reservations for this workshop with user/client info and session details
-    const result = await pool.query(
-      `SELECT 
-        r.id,
-        r.workshop_id,
-        r.session_id,
-        r.user_id,
-        r.quantity,
-        r.status,
-        r.waitlist_position,
-        r.guest_name,
-        r.guest_email,
-        r.guest_phone,
-        r.created_at,
-        r.cancelled_at,
-        r.cancellation_reason,
-        u.name as user_name,
-        u.email as user_email,
-        ws.session_date,
-        ws.session_time,
-        ws.capacity as session_capacity,
-        ws.booked_count
-      FROM reservations r
-      LEFT JOIN users u ON r.user_id = u.id
-      LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
-      WHERE r.workshop_id = $1
-      ORDER BY r.created_at DESC`,
-      [id]
-    );
+    // Get all reservations for this workshop
+    const reservations = await reservationsCollection.find({ workshop_id: id })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    // Get user and session details for each reservation
+    const reservationsWithDetails = await Promise.all(reservations.map(async (r) => {
+      const user = r.user_id ? await usersCollection.findOne({ _id: r.user_id }) : null;
+      const session = r.session_id ? await sessionsCollection.findOne({ _id: r.session_id }) : null;
+
+      return {
+        id: r._id,
+        workshop_id: r.workshop_id,
+        session_id: r.session_id,
+        user_id: r.user_id,
+        quantity: parseInt(r.quantity),
+        status: r.status,
+        waitlist_position: r.waitlist_position ? parseInt(r.waitlist_position) : null,
+        guest_name: r.guest_name,
+        guest_email: r.guest_email,
+        guest_phone: r.guest_phone,
+        created_at: r.created_at,
+        cancelled_at: r.cancelled_at,
+        cancellation_reason: r.cancellation_reason,
+        user_name: user?.name || null,
+        user_email: user?.email || null,
+        session_date: session?.session_date || null,
+        session_time: session?.session_time || null,
+        session_capacity: session?.capacity || null,
+        booked_count: session?.booked_count || null
+      };
+    }));
 
     res.json({
       success: true,
-      data: result.rows.map(reservation => ({
-        ...reservation,
-        quantity: parseInt(reservation.quantity),
-        waitlist_position: reservation.waitlist_position ? parseInt(reservation.waitlist_position) : null
-      }))
+      data: reservationsWithDetails
     });
   } catch (error) {
     console.error('Error fetching workshop reservations:', error);
@@ -160,33 +149,31 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get workshop
-    const workshopResult = await pool.query(
-      'SELECT * FROM workshops WHERE id = $1',
-      [id]
-    );
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
-    if (workshopResult.rows.length === 0) {
+    // Get workshop
+    const workshop = await workshopsCollection.findOne({ _id: id });
+
+    if (!workshop) {
       return res.status(404).json({
         success: false,
         message: 'Atelier non trouvé'
       });
     }
 
-    const workshop = workshopResult.rows[0];
-
     // Get sessions
-    const sessionsResult = await pool.query(
-      'SELECT * FROM workshop_sessions WHERE workshop_id = $1 ORDER BY session_date, session_time',
-      [id]
-    );
+    const sessions = await sessionsCollection.find({ workshop_id: id })
+      .sort({ session_date: 1, session_time: 1 })
+      .toArray();
 
     res.json({
       success: true,
       data: {
+        id: workshop._id,
         ...workshop,
         price: parseFloat(workshop.price || 0),
-        sessions: sessionsResult.rows
+        sessions: sessions.map(s => ({ id: s._id, ...s }))
       }
     });
   } catch (error) {
@@ -211,17 +198,29 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO workshops (title, description, level, duration, price, image, status, capacity)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [title, description || null, level || 'débutant', duration || 120, price, image || null, status || 'active', capacity || 10]
-    );
+    const workshopsCollection = await getCollection('workshops');
+    
+    const workshopData = {
+      title,
+      description: description || null,
+      level: level || 'débutant',
+      duration: duration || 120,
+      price: parseFloat(price),
+      image: image || null,
+      status: status || 'active',
+      capacity: capacity || 10,
+      created_at: new Date()
+    };
+
+    const result = await workshopsCollection.insertOne(workshopData);
 
     res.status(201).json({
       success: true,
       message: 'Atelier créé avec succès',
-      data: result.rows[0]
+      data: {
+        id: result.insertedId,
+        ...workshopData
+      }
     });
   } catch (error) {
     console.error('Error creating workshop:', error);
@@ -239,66 +238,45 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { title, description, level, duration, price, image, status, capacity } = req.body;
 
-    const updates = [];
-    const values = [];
-    let paramCount = 1;
+    const workshopsCollection = await getCollection('workshops');
+    
+    const updateData = {};
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (level !== undefined) updateData.level = level;
+    if (duration !== undefined) updateData.duration = duration;
+    if (price !== undefined) updateData.price = parseFloat(price);
+    if (image !== undefined) updateData.image = image;
+    if (status !== undefined) updateData.status = status;
+    if (capacity !== undefined) updateData.capacity = capacity;
 
-    if (title !== undefined) {
-      updates.push(`title = $${paramCount++}`);
-      values.push(title);
-    }
-    if (description !== undefined) {
-      updates.push(`description = $${paramCount++}`);
-      values.push(description);
-    }
-    if (level !== undefined) {
-      updates.push(`level = $${paramCount++}`);
-      values.push(level);
-    }
-    if (duration !== undefined) {
-      updates.push(`duration = $${paramCount++}`);
-      values.push(duration);
-    }
-    if (price !== undefined) {
-      updates.push(`price = $${paramCount++}`);
-      values.push(price);
-    }
-    if (image !== undefined) {
-      updates.push(`image = $${paramCount++}`);
-      values.push(image);
-    }
-    if (status !== undefined) {
-      updates.push(`status = $${paramCount++}`);
-      values.push(status);
-    }
-    if (capacity !== undefined) {
-      updates.push(`capacity = $${paramCount++}`);
-      values.push(capacity);
-    }
-
-    if (updates.length === 0) {
+    if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Aucune donnée à mettre à jour'
       });
     }
 
-    values.push(id);
-    const query = `UPDATE workshops SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
+    const result = await workshopsCollection.updateOne(
+      { _id: id },
+      { $set: updateData }
+    );
 
-    const result = await pool.query(query, values);
-
-    if (result.rows.length === 0) {
+    if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
         message: 'Atelier non trouvé'
       });
     }
 
+    const updated = await workshopsCollection.findOne({ _id: id });
     res.json({
       success: true,
       message: 'Atelier mis à jour',
-      data: result.rows[0]
+      data: {
+        id: updated._id,
+        ...updated
+      }
     });
   } catch (error) {
     console.error('Error updating workshop:', error);
@@ -315,12 +293,10 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      'DELETE FROM workshops WHERE id = $1 RETURNING id',
-      [id]
-    );
+    const workshopsCollection = await getCollection('workshops');
+    const result = await workshopsCollection.deleteOne({ _id: id });
 
-    if (result.rows.length === 0) {
+    if (result.deletedCount === 0) {
       return res.status(404).json({
         success: false,
         message: 'Atelier non trouvé'
@@ -346,14 +322,14 @@ router.get('/:id/sessions', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      'SELECT * FROM workshop_sessions WHERE workshop_id = $1 ORDER BY session_date, session_time',
-      [id]
-    );
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const sessions = await sessionsCollection.find({ workshop_id: id })
+      .sort({ session_date: 1, session_time: 1 })
+      .toArray();
 
     res.json({
       success: true,
-      data: result.rows
+      data: sessions.map(s => ({ id: s._id, ...s }))
     });
   } catch (error) {
     console.error('Error fetching sessions:', error);
@@ -378,17 +354,27 @@ router.post('/:id/sessions', async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO workshop_sessions (workshop_id, session_date, session_time, capacity)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [id, session_date, session_time, capacity]
-    );
+    const sessionsCollection = await getCollection('workshop_sessions');
+    
+    const sessionData = {
+      workshop_id: id,
+      session_date: new Date(session_date),
+      session_time: session_time,
+      capacity: parseInt(capacity),
+      booked_count: 0,
+      status: 'active',
+      created_at: new Date()
+    };
+
+    const result = await sessionsCollection.insertOne(sessionData);
 
     res.status(201).json({
       success: true,
       message: 'Session créée avec succès',
-      data: result.rows[0]
+      data: {
+        id: result.insertedId,
+        ...sessionData
+      }
     });
   } catch (error) {
     console.error('Error creating session:', error);
@@ -405,13 +391,13 @@ router.delete('/:id/sessions/:sessionId', async (req, res) => {
   try {
     const { id, sessionId } = req.params;
 
-    // Check if session belongs to workshop
-    const sessionCheck = await pool.query(
-      'SELECT * FROM workshop_sessions WHERE id = $1 AND workshop_id = $2',
-      [sessionId, id]
-    );
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const reservationsCollection = await getCollection('reservations');
 
-    if (sessionCheck.rows.length === 0) {
+    // Check if session belongs to workshop
+    const session = await sessionsCollection.findOne({ _id: sessionId, workshop_id: id });
+
+    if (!session) {
       return res.status(404).json({
         success: false,
         message: 'Session non trouvée'
@@ -419,22 +405,16 @@ router.delete('/:id/sessions/:sessionId', async (req, res) => {
     }
 
     // Check if there are any bookings for this session
-    const bookingsCheck = await pool.query(
-      'SELECT COUNT(*) FROM reservations WHERE session_id = $1',
-      [sessionId]
-    );
+    const bookingsCount = await reservationsCollection.countDocuments({ session_id: sessionId });
 
-    if (parseInt(bookingsCheck.rows[0].count) > 0) {
+    if (bookingsCount > 0) {
       return res.status(400).json({
         success: false,
         message: 'Impossible de supprimer une session avec des réservations'
       });
     }
 
-    await pool.query(
-      'DELETE FROM workshop_sessions WHERE id = $1',
-      [sessionId]
-    );
+    await sessionsCollection.deleteOne({ _id: sessionId });
 
     res.json({
       success: true,
@@ -456,47 +436,43 @@ router.get('/:id/bookings', async (req, res) => {
     const { id } = req.params;
     const { session_id, status } = req.query;
 
-    let query = `
-      SELECT 
-        r.id,
-        r.quantity,
-        r.status,
-        r.waitlist_position,
-        r.guest_name,
-        r.guest_email,
-        r.guest_phone,
-        r.created_at,
-        r.cancelled_at,
-        r.cancellation_reason,
-        u.name as user_name,
-        u.email as user_email,
-        ws.session_date,
-        ws.session_time
-      FROM reservations r
-      LEFT JOIN users u ON r.user_id = u.id
-      LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
-      WHERE r.workshop_id = $1
-    `;
-    const params = [id];
-    let paramCount = 2;
+    const reservationsCollection = await getCollection('reservations');
+    const usersCollection = await getCollection('users');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
-    if (session_id) {
-      query += ` AND r.session_id = $${paramCount++}`;
-      params.push(session_id);
-    }
+    const query = { workshop_id: id };
+    if (session_id) query.session_id = session_id;
+    if (status) query.status = status;
 
-    if (status) {
-      query += ` AND r.status = $${paramCount++}`;
-      params.push(status);
-    }
+    const reservations = await reservationsCollection.find(query)
+      .sort({ created_at: -1 })
+      .toArray();
 
-    query += ' ORDER BY r.created_at DESC';
+    const bookings = await Promise.all(reservations.map(async (r) => {
+      const user = r.user_id ? await usersCollection.findOne({ _id: r.user_id }) : null;
+      const session = r.session_id ? await sessionsCollection.findOne({ _id: r.session_id }) : null;
 
-    const result = await pool.query(query, params);
+      return {
+        id: r._id,
+        quantity: r.quantity,
+        status: r.status,
+        waitlist_position: r.waitlist_position,
+        guest_name: r.guest_name,
+        guest_email: r.guest_email,
+        guest_phone: r.guest_phone,
+        created_at: r.created_at,
+        cancelled_at: r.cancelled_at,
+        cancellation_reason: r.cancellation_reason,
+        user_name: user?.name || null,
+        user_email: user?.email || null,
+        session_date: session?.session_date || null,
+        session_time: session?.session_time || null
+      };
+    }));
 
     res.json({
       success: true,
-      data: result.rows
+      data: bookings
     });
   } catch (error) {
     console.error('Error fetching bookings:', error);
@@ -528,20 +504,19 @@ router.post('/:id/bookings', async (req, res) => {
       });
     }
 
-    // Check session availability
-    const sessionResult = await pool.query(
-      'SELECT * FROM workshop_sessions WHERE id = $1',
-      [session_id]
-    );
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const reservationsCollection = await getCollection('reservations');
 
-    if (sessionResult.rows.length === 0) {
+    // Check session availability
+    const session = await sessionsCollection.findOne({ _id: session_id });
+
+    if (!session) {
       return res.status(404).json({
         success: false,
         message: 'Session non trouvée'
       });
     }
 
-    const session = sessionResult.rows[0];
     const availableSpots = session.capacity - session.booked_count;
 
     if (availableSpots < quantity) {
@@ -551,37 +526,51 @@ router.post('/:id/bookings', async (req, res) => {
       });
     }
 
-    const client = await pool.connect();
-    
     try {
-      await client.query('BEGIN');
-
       // Create reservation
-      const reservationResult = await client.query(
-        `INSERT INTO reservations (workshop_id, session_id, user_id, quantity, status, guest_name, guest_email, guest_phone)
-         VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7)
-         RETURNING *`,
-        [id, session_id, user_id || null, quantity, guest_name || null, guest_email || null, guest_phone || null]
-      );
+      const reservationData = {
+        workshop_id: id,
+        session_id: session_id,
+        user_id: user_id || null,
+        quantity: quantity,
+        status: 'confirmed',
+        guest_name: guest_name || null,
+        guest_email: guest_email || null,
+        guest_phone: guest_phone || null,
+        created_at: new Date()
+      };
+
+      const reservationResult = await reservationsCollection.insertOne(reservationData);
+      const reservation = {
+        id: reservationResult.insertedId,
+        ...reservationData
+      };
 
       // Update session booked count
-      await client.query(
-        'UPDATE workshop_sessions SET booked_count = booked_count + $1 WHERE id = $2',
-        [quantity, session_id]
+      await sessionsCollection.updateOne(
+        { _id: session_id },
+        { $inc: { booked_count: quantity } }
       );
-
-      await client.query('COMMIT');
 
       res.status(201).json({
         success: true,
         message: 'Réservation créée manuellement',
-        data: reservationResult.rows[0]
+        data: reservation
       });
     } catch (error) {
-      await client.query('ROLLBACK');
+      // Cleanup on error
+      try {
+        if (reservation?.id) {
+          await reservationsCollection.deleteOne({ _id: reservation.id });
+          await sessionsCollection.updateOne(
+            { _id: session_id },
+            { $inc: { booked_count: -quantity } }
+          );
+        }
+      } catch (cleanupError) {
+        console.error('Error cleaning up failed reservation:', cleanupError);
+      }
       throw error;
-    } finally {
-      client.release();
     }
   } catch (error) {
     console.error('Error creating manual booking:', error);
@@ -599,24 +588,22 @@ router.put('/bookings/:id/cancel', async (req, res) => {
     const { id } = req.params;
     const { reason, refund_amount, send_email } = req.body;
 
-    // Get reservation
-    const reservationResult = await pool.query(
-      `SELECT r.*, w.title as workshop_title, ws.session_date, ws.session_time
-       FROM reservations r
-       LEFT JOIN workshops w ON r.workshop_id = w.id
-       LEFT JOIN workshop_sessions ws ON r.session_id = ws.id
-       WHERE r.id = $1`,
-      [id]
-    );
+    const reservationsCollection = await getCollection('reservations');
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
 
-    if (reservationResult.rows.length === 0) {
+    // Get reservation
+    const reservation = await reservationsCollection.findOne({ _id: id });
+
+    if (!reservation) {
       return res.status(404).json({
         success: false,
         message: 'Réservation non trouvée'
       });
     }
 
-    const reservation = reservationResult.rows[0];
+    const workshop = await workshopsCollection.findOne({ _id: reservation.workshop_id });
+    const session = await sessionsCollection.findOne({ _id: reservation.session_id });
 
     if (reservation.cancelled_at) {
       return res.status(400).json({
@@ -625,30 +612,26 @@ router.put('/bookings/:id/cancel', async (req, res) => {
       });
     }
 
-    const client = await pool.connect();
-    
     try {
-      await client.query('BEGIN');
-
       // Update reservation
-      await client.query(
-        `UPDATE reservations 
-         SET status = 'cancelled',
-             cancelled_at = NOW(),
-             cancellation_reason = $1
-         WHERE id = $2`,
-        [reason || null, id]
+      await reservationsCollection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            status: 'cancelled',
+            cancelled_at: new Date(),
+            cancellation_reason: reason || null
+          }
+        }
       );
 
       // Update session booked count if confirmed
       if (reservation.status === 'confirmed') {
-        await client.query(
-          'UPDATE workshop_sessions SET booked_count = booked_count - $1 WHERE id = $2',
-          [reservation.quantity, reservation.session_id]
+        await sessionsCollection.updateOne(
+          { _id: reservation.session_id },
+          { $inc: { booked_count: -reservation.quantity } }
         );
       }
-
-      await client.query('COMMIT');
 
       // Send cancellation email if requested
       if (send_email && (reservation.guest_email || reservation.user_id)) {
@@ -656,8 +639,8 @@ router.put('/bookings/:id/cancel', async (req, res) => {
         if (email) {
           await sendWorkshopCancellation(email, {
             participantName: reservation.guest_name || 'Participant',
-            workshopTitle: reservation.workshop_title,
-            sessionDate: reservation.session_date,
+            workshopTitle: workshop?.title || '',
+            sessionDate: session?.session_date || null,
             reason: reason,
             refundAmount: refund_amount
           });
@@ -670,10 +653,7 @@ router.put('/bookings/:id/cancel', async (req, res) => {
         data: { ...reservation, cancelled_at: new Date() }
       });
     } catch (error) {
-      await client.query('ROLLBACK');
       throw error;
-    } finally {
-      client.release();
     }
   } catch (error) {
     console.error('Error cancelling booking:', error);
@@ -692,33 +672,43 @@ router.get('/calendar/view', async (req, res) => {
     const targetMonth = month || new Date().getMonth() + 1;
     const targetYear = year || new Date().getFullYear();
 
-    const result = await pool.query(
-      `SELECT 
-        ws.id as session_id,
-        ws.session_date,
-        ws.session_time,
-        ws.capacity,
-        ws.booked_count,
-        w.id as workshop_id,
-        w.title,
-        w.level,
-        w.duration,
-        w.price
-       FROM workshop_sessions ws
-       LEFT JOIN workshops w ON ws.workshop_id = w.id
-       WHERE EXTRACT(MONTH FROM ws.session_date) = $1
-         AND EXTRACT(YEAR FROM ws.session_date) = $2
-         AND ws.status = 'active'
-       ORDER BY ws.session_date, ws.session_time`,
-      [targetMonth, targetYear]
-    );
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const workshopsCollection = await getCollection('workshops');
+
+    // Get sessions for the month
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    const sessions = await sessionsCollection.find({
+      session_date: {
+        $gte: startDate,
+        $lte: endDate
+      },
+      status: 'active'
+    })
+    .sort({ session_date: 1, session_time: 1 })
+    .toArray();
+
+    // Get workshop details for each session
+    const sessionsWithWorkshops = await Promise.all(sessions.map(async (ws) => {
+      const workshop = await workshopsCollection.findOne({ _id: ws.workshop_id });
+      return {
+        session_id: ws._id,
+        session_date: ws.session_date,
+        session_time: ws.session_time,
+        capacity: ws.capacity,
+        booked_count: ws.booked_count,
+        workshop_id: workshop?._id || null,
+        title: workshop?.title || null,
+        level: workshop?.level || null,
+        duration: workshop?.duration || null,
+        price: parseFloat(workshop?.price || 0)
+      };
+    }));
 
     res.json({
       success: true,
-      data: result.rows.map(row => ({
-        ...row,
-        price: parseFloat(row.price || 0)
-      }))
+      data: sessionsWithWorkshops
     });
   } catch (error) {
     console.error('Error fetching calendar:', error);
