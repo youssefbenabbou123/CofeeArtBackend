@@ -5,21 +5,13 @@ dotenv.config();
 
 const { Pool } = pg;
 
-// Validate DATABASE_URL is set BEFORE creating the pool
+// Note: DATABASE_URL is no longer required since we migrated to MongoDB
+// This file is kept for backward compatibility with migration scripts only
+// If DATABASE_URL is not set, we simply don't create the pool
 if (!process.env.DATABASE_URL) {
-  console.error('❌ DATABASE_URL environment variable is not set!');
-  console.error('');
-  console.error('To fix this:');
-  console.error('1. Go to Railway Dashboard → Your PostgreSQL service');
-  console.error('2. Copy the DATABASE_URL from the Variables tab');
-  console.error('3. Go to your Backend service → Variables tab');
-  console.error('4. Add DATABASE_URL with the copied value');
-  console.error('');
-  console.error('Current environment variables:');
-  console.error('- NODE_ENV:', process.env.NODE_ENV || 'not set');
-  console.error('- RAILWAY_ENVIRONMENT:', process.env.RAILWAY_ENVIRONMENT || 'not set');
-  console.error('- DATABASE_URL:', 'NOT SET ❌');
-  process.exit(1);
+  console.warn('⚠️  DATABASE_URL not set - PostgreSQL connection will not be available');
+  console.warn('   This is normal if you are using MongoDB (which is the default now)');
+  console.warn('   DATABASE_URL is only needed for migration scripts');
 }
 
 // Determine if we're in production (Railway) or development
@@ -56,28 +48,45 @@ console.log('- Platform:', isRailway ? 'Railway' : 'Local');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'not set');
 console.log('- RAILWAY_ENVIRONMENT:', process.env.RAILWAY_ENVIRONMENT || 'not set');
 
-// Build connection configuration with SSL for Railway
-const poolConfig = {
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Required for Railway PostgreSQL
-  }
-};
+// Only create pool if DATABASE_URL is set (for migration scripts)
+let pool = null;
 
-console.log('🔒 SSL enabled for database connection (required for Railway)');
+if (process.env.DATABASE_URL) {
+  // Build connection configuration with SSL for Railway
+  const poolConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false // Required for Railway PostgreSQL
+    }
+  };
 
-// Create a connection pool
-const pool = new Pool(poolConfig);
+  console.log('🔒 SSL enabled for database connection (required for Railway)');
 
-// Test the connection
-pool.on('connect', () => {
-  console.log('✅ Connected to PostgreSQL database');
-  if (isRailway) {
-    console.log('📍 Using Railway PostgreSQL');
-  }
-});
+  // Create a connection pool
+  pool = new Pool(poolConfig);
+} else {
+  // Create a dummy pool object that throws errors when used
+  pool = {
+    query: () => {
+      throw new Error('PostgreSQL pool not initialized. DATABASE_URL is required for PostgreSQL operations.');
+    },
+    connect: () => {
+      throw new Error('PostgreSQL pool not initialized. DATABASE_URL is required for PostgreSQL operations.');
+    },
+    end: () => Promise.resolve()
+  };
+}
 
-pool.on('error', (err) => {
+// Test the connection (only if pool was created)
+if (pool && process.env.DATABASE_URL) {
+  pool.on('connect', () => {
+    console.log('✅ Connected to PostgreSQL database');
+    if (isRailway) {
+      console.log('📍 Using Railway PostgreSQL');
+    }
+  });
+
+  pool.on('error', (err) => {
   console.error('❌ Unexpected error on idle client', err);
   const dbUrl = process.env.DATABASE_URL || '';
   const maskedUrl = dbUrl ? dbUrl.replace(/:([^:@]+)@/, ':****@').substring(0, 100) + '...' : 'NOT SET';
@@ -103,14 +112,21 @@ pool.on('error', (err) => {
       console.error('   3. Verify the PostgreSQL service is running');
     }
   }
-  process.exit(-1);
-});
+  // Don't exit in production - just log the error
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(-1);
+  }
+  });
+}
 
-// Export the pool for use in routes
+// Export the pool for use in routes (null if DATABASE_URL not set)
 export default pool;
 
 // Helper function to test the database connection
 export async function testConnection() {
+  if (!process.env.DATABASE_URL || !pool) {
+    throw new Error('PostgreSQL not configured. DATABASE_URL is required.');
+  }
   try {
     const result = await pool.query('SELECT NOW(), version()');
     return {
