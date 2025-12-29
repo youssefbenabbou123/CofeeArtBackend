@@ -44,6 +44,9 @@ const allowedOrigins = [
   'http://localhost:5174',
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
+  // Production domain
+  'https://coffeeartsparis.fr',
+  'https://www.coffeeartsparis.fr',
   // Vercel deployments (for when you deploy)
   'https://my-project-ovwmn55cv-lhehlolbro123-2933s-projects.vercel.app',
   'https://my-project-78bhaky0t-lhehlolbro123-2933s-projects.vercel.app',
