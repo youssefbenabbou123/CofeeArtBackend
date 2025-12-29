@@ -47,6 +47,7 @@ const allowedOrigins = [
   // Production domain
   'https://coffeeartsparis.fr',
   'https://www.coffeeartsparis.fr',
+  /^https:\/\/.*coffeeartsparis\.fr$/,  // Match any subdomain of coffeeartsparis.fr
   // Vercel deployments (for when you deploy)
   'https://my-project-ovwmn55cv-lhehlolbro123-2933s-projects.vercel.app',
   'https://my-project-78bhaky0t-lhehlolbro123-2933s-projects.vercel.app',
@@ -60,27 +61,36 @@ const corsOptions = {
     // Allow requests with no origin (direct browser requests, health checks, etc.)
     // This is safe because browsers don't send credentials with no-origin requests
     if (!origin) {
+      console.log('✅ CORS: No origin (direct request) - allowing');
       return callback(null, true);
     }
+
+    // Log all CORS requests for debugging
+    console.log(`🔍 CORS check: Origin="${origin}"`);
 
     // Check if origin is in allowedOrigins
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin instanceof RegExp) {
-        return allowedOrigin.test(origin);
+        const matches = allowedOrigin.test(origin);
+        if (matches) {
+          console.log(`✅ CORS: Origin matches regex pattern: ${allowedOrigin}`);
+        }
+        return matches;
       }
-      return allowedOrigin === origin;
+      const matches = allowedOrigin === origin;
+      if (matches) {
+        console.log(`✅ CORS: Origin matches exact: ${allowedOrigin}`);
+      }
+      return matches;
     });
 
     if (isAllowed) {
-      if (process.env.NODE_ENV === 'development') {
-        console.log('✅ CORS allowed origin:', origin);
-      }
+      console.log(`✅ CORS allowed origin: ${origin}`);
       return callback(null, true);
     }
 
-    if (process.env.NODE_ENV === 'development') {
-      console.log('❌ CORS blocked origin:', origin);
-    }
+    console.log(`❌ CORS blocked origin: ${origin}`);
+    console.log(`   Allowed origins: ${allowedOrigins.map(o => typeof o === 'string' ? o : o.toString()).join(', ')}`);
     return callback(new Error(`CORS policy: Origin ${origin} not allowed`));
   },
   credentials: true,
@@ -103,6 +113,14 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false, // Disable for compatibility
 }));
+
+// Normalize URLs (remove double slashes)
+app.use((req, res, next) => {
+  if (req.url.includes('//')) {
+    req.url = req.url.replace(/\/+/g, '/');
+  }
+  next();
+});
 
 // Apply CORS middleware
 app.use(cors(corsOptions));
