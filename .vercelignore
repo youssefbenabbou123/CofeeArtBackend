@@ -1,0 +1,14 @@
+# Ignore PostgreSQL migration files
+db.postgres.js
+migrate*.js
+setup-*.js
+seed-*.js
+clear-*.js
+add-*.js
+verify-*.js
+upload-*.js
+insert-*.js
+run-*.js
+scripts/
+migrations/
+
