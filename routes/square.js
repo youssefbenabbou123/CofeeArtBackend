@@ -10,8 +10,8 @@ const router = express.Router();
 // GET /api/square/check-config
 // Check if Square is configured
 router.get('/check-config', (req, res) => {
-    const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl9UEyMZ8UQ0EuKqWOkS4rt_vgJ5H7H9CBHruBXSnDOBtcu53FmG_z7ji1vP7';
-    const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+    const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+    const applicationId = process.env.SQUARE_APPLICATION_ID;
     const hasAccessToken = !!accessToken;
     const hasApplicationId = !!applicationId;
     let configured = false;

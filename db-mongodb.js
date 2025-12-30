@@ -3,9 +3,18 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// MongoDB connection string
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://deep:12345@cluster0.y7nju.mongodb.net/?appName=Cluster0';
+// MongoDB connection string - MUST be set in environment variables
+const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.MONGODB_DB_NAME || 'coffee';
+
+if (!MONGODB_URI) {
+  console.error('❌ CRITICAL: MONGODB_URI environment variable is not set!');
+  console.error('   The application cannot connect to the database without MONGODB_URI.');
+  console.error('   Please set MONGODB_URI in your environment variables.');
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+}
 
 let client = null;
 let db = null;
@@ -71,4 +80,5 @@ export async function testConnection() {
 
 // Export default db instance
 export default db;
+
 

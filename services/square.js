@@ -8,37 +8,38 @@ dotenv.config();
 let squareClient = null;
 let squareInitError = null;
 
-const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl7w2qKcRmOIDvAFbpB1KNOZlPP_PVW3p_zMF1TYeKIiX6cS9pYVWKHoLHiW-';
-const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+const applicationId = process.env.SQUARE_APPLICATION_ID;
 const environment = process.env.SQUARE_ENVIRONMENT || 'sandbox'; // 'sandbox' or 'production'
 const locationIdOverride = process.env.SQUARE_LOCATION_ID; // Optional: set if API call fails
 
-// Debug: Show token info
-console.log('🔍 Square Debug Info:');
-console.log('   Token from ENV:', process.env.SQUARE_ACCESS_TOKEN ? 'YES' : 'NO (using fallback)');
-console.log('   Token starts with:', accessToken.substring(0, 10) + '...');
-console.log('   Token ends with:', '...' + accessToken.substring(accessToken.length - 10));
-console.log('   Token length:', accessToken.length);
+// Debug: Show token info (only in development)
+if (process.env.NODE_ENV !== 'production') {
+  console.log('🔍 Square Debug Info:');
+  console.log('   Token from ENV:', process.env.SQUARE_ACCESS_TOKEN ? 'YES' : 'NO (using fallback)');
+  console.log('   Token starts with:', accessToken.substring(0, 10) + '...');
+  console.log('   Token ends with:', '...' + accessToken.substring(accessToken.length - 10));
+  console.log('   Token length:', accessToken.length);
+}
 
 if (accessToken && applicationId) {
   try {
-    console.log('🔍 [DEBUG] Initializing Square Client:');
-    console.log('   Access token length:', accessToken.length);
-    console.log('   Access token starts with:', accessToken.substring(0, 15));
-    console.log('   Access token ends with:', accessToken.substring(accessToken.length - 15));
-    console.log('   Application ID:', applicationId);
-    console.log('   Environment:', environment);
-    console.log('   SquareEnvironment.Sandbox:', SquareEnvironment.Sandbox);
-    console.log('   SquareEnvironment.Production:', SquareEnvironment.Production);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Initializing Square Client:');
+      console.log('   Access token length:', accessToken.length);
+      console.log('   Access token starts with:', accessToken.substring(0, 15));
+      console.log('   Access token ends with:', accessToken.substring(accessToken.length - 15));
+      console.log('   Application ID:', applicationId);
+      console.log('   Environment:', environment);
+    }
 
     squareClient = new SquareClient({
       accessToken: accessToken,
       environment: environment === 'production' ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
+      squareVersion: '2025-12-30', // Match Postman working version
     });
 
-    console.log('✅ Square initialized successfully');
-    console.log('   Environment:', environment);
-    console.log('   Application ID:', applicationId.substring(0, 20) + '...');
+    console.log(`✅ Square initialized successfully (${environment})`);
   } catch (error) {
     squareInitError = error.message;
     console.error('❌ Error initializing Square:', error.message);
@@ -68,7 +69,10 @@ export async function getLocationId() {
   }
 
   // Debug: Log token information
-  const token = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl9UEyMZ8UQ0EuKqWOkS4rt_vgJ5H7H9CBHruBXSnDOBtcu53FmG_z7ji1vP7';
+  const token = process.env.SQUARE_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error('SQUARE_ACCESS_TOKEN is not set in environment variables');
+  }
   console.log('🔍 [DEBUG] getLocationId - Attempting to fetch from API:');
   console.log('   Token length:', token.length);
   console.log('   Token starts with:', token.substring(0, 15));
@@ -213,6 +217,7 @@ export async function processRefund(paymentId, amount = null, reason = 'REQUESTE
 
 /**
  * Create a Square Checkout Link
+ * Uses direct HTTP request (like Postman) to ensure correct headers
  * @param {Array} lineItems - Array of line items for the checkout
  * @param {string} successUrl - URL to redirect on success
  * @param {string} cancelUrl - URL to redirect on cancel
@@ -220,120 +225,136 @@ export async function processRefund(paymentId, amount = null, reason = 'REQUESTE
  * @returns {Promise<Object>} Checkout link
  */
 export async function createCheckoutLink(lineItems, successUrl, cancelUrl, metadata = {}) {
-  if (!squareClient) {
-    const errorMsg = squareInitError
-      ? `Square is not configured: ${squareInitError}`
-      : 'Square is not configured. Please set SQUARE_ACCESS_TOKEN and SQUARE_APPLICATION_ID.';
-    throw new Error(errorMsg);
+  if (!accessToken) {
+    throw new Error('Square is not configured. Please set SQUARE_ACCESS_TOKEN in environment variables.');
   }
 
   try {
-    console.log('🔍 [DEBUG] createCheckoutLink - Starting:');
-    console.log('   Line items count:', lineItems.length);
-    console.log('   Success URL:', successUrl);
-    console.log('   Cancel URL:', cancelUrl);
-    console.log('   Metadata:', JSON.stringify(metadata, null, 2));
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] createCheckoutLink - Starting (Direct HTTP):');
+      console.log('   Line items count:', lineItems.length);
+      console.log('   Success URL:', successUrl);
+      console.log('   Cancel URL:', cancelUrl);
+      console.log('   Metadata:', JSON.stringify(metadata, null, 2));
+    }
 
     const locationId = await getLocationId();
-    console.log('🔍 [DEBUG] Location ID obtained:', locationId);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Location ID obtained:', locationId);
+    }
 
-    // Convert line items to Square format
-    const squareLineItems = lineItems.map(item => ({
-      name: item.name || 'Item',
-      quantity: item.quantity?.toString() || '1',
-      basePriceMoney: {
-        amount: Math.round((item.amount || item.price || 0) * 100), // Convert to cents
-        currency: 'EUR',
-      },
-    }));
+    // Helper function to convert amount to cents safely
+    // ALWAYS expects amount in EUROS (e.g., 35.00), converts to cents (3500)
+    const toSquareCents = (amount) => {
+      if (amount === 0) return 0;
+      
+      const amountNum = parseFloat(amount);
+      
+      // Sanity check: if amount is suspiciously large (> 10000€ = 1,000,000 cents)
+      // it might already be in cents by mistake
+      if (amountNum > 10000) {
+        console.warn(`⚠️ WARNING: Amount ${amountNum} seems very large. Is it already in cents?`);
+        // If it's a round number (no decimals), it's likely already in cents
+        if (amountNum % 1 === 0 && amountNum > 100) {
+          console.warn(`⚠️ Treating ${amountNum} as CENTS (not converting)`);
+          return Math.round(amountNum);
+        }
+      }
+      
+      // Normal case: amount is in euros, convert to cents
+      const cents = Math.round(amountNum * 100);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`💰 Converting: ${amountNum}€ → ${cents} cents`);
+      }
+      return cents;
+    };
 
-    console.log('🔍 [DEBUG] Square line items:', JSON.stringify(squareLineItems, null, 2));
-
-    const totalAmount = Math.round(lineItems.reduce((sum, item) => sum + (item.amount || item.price || 0), 0) * 100);
-    console.log('🔍 [DEBUG] Total amount (cents):', totalAmount);
-
-    // Convert amounts to BigInt (required by Square SDK)
-    const squareLineItemsWithBigInt = squareLineItems.map(item => ({
-      ...item,
-      basePriceMoney: {
-        ...item.basePriceMoney,
-        amount: BigInt(item.basePriceMoney.amount),
-      },
-    }));
-
-    const paymentLinkRequest = {
-      idempotencyKey: `checkout-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      quickPay: {
-        name: metadata.name || 'Order',
-        locationId: locationId, // Required for quickPay
-        priceMoney: {
-          amount: BigInt(totalAmount), // Must be BigInt
+    // Convert line items to Square format (snake_case, like Postman)
+    const squareLineItems = lineItems.map(item => {
+      const rawAmount = item.amount || item.price || 0;
+      const amountInCents = toSquareCents(rawAmount);
+      
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`🔍 [DEBUG] Line item "${item.name}": raw=${rawAmount} → cents=${amountInCents}`);
+      }
+      
+      return {
+        name: item.name || 'Item',
+        quantity: (item.quantity || 1).toString(),
+        base_price_money: {
+          amount: amountInCents,
           currency: 'EUR',
         },
-      },
-      checkoutOptions: {
-        redirectUrl: successUrl,
-        askForShippingAddress: true,
-      },
-      prePopulatedData: {
-        buyerEmail: metadata.email || undefined,
-        buyerPhoneNumber: metadata.phone || undefined,
-      },
+      };
+    });
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Square line items:', JSON.stringify(squareLineItems, null, 2));
+    }
+
+    // Build request body exactly like Postman (snake_case)
+    const requestBody = {
+      idempotency_key: `checkout-${Date.now()}-${Math.random().toString(36).substring(7)}`,
       order: {
-        locationId: locationId,
-        lineItems: squareLineItemsWithBigInt,
+        location_id: locationId,
+        line_items: squareLineItems,
+      },
+      checkout_options: {
+        redirect_url: successUrl,
+        ask_for_shipping_address: true,
       },
     };
 
-    // Custom serializer for BigInt values in debug log
-    const debugRequest = JSON.parse(JSON.stringify(paymentLinkRequest, (key, value) =>
-      typeof value === 'bigint' ? value.toString() : value
-    ));
-    console.log('🔍 [DEBUG] Payment link request:', JSON.stringify(debugRequest, null, 2));
-    console.log('🔍 [DEBUG] Calling squareClient.checkout.paymentLinks.create()...');
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Payment link request body:', JSON.stringify(requestBody, null, 2));
+    }
 
-    const response = await squareClient.checkout.paymentLinks.create(paymentLinkRequest);
+    // Determine API URL based on environment
+    const baseUrl = environment === 'production' 
+      ? 'https://connect.squareup.com' 
+      : 'https://connect.squareupsandbox.com';
+    const apiUrl = `${baseUrl}/v2/online-checkout/payment-links`;
 
-    if (response.result && response.result.paymentLink) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Calling Square API directly:');
+      console.log('   URL:', apiUrl);
+      console.log('   Method: POST');
+    }
+
+    // Make direct HTTP request like Postman
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Square-Version': '2025-12-30',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const data = await response.json();
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 [DEBUG] Response status:', response.status);
+      console.log('🔍 [DEBUG] Response body:', JSON.stringify(data, null, 2));
+    }
+
+    if (!response.ok) {
+      const errorDetail = data.errors?.[0]?.detail || 'Unknown error';
+      const errorCode = data.errors?.[0]?.code || 'UNKNOWN';
+      throw new Error(`Square API Error (${response.status}): ${errorCode} - ${errorDetail}`);
+    }
+
+    if (data.payment_link) {
+      console.log('✅ Payment link created successfully!');
       return {
-        id: response.result.paymentLink.id,
-        url: response.result.paymentLink.url || response.result.paymentLink.longUrl,
+        id: data.payment_link.id,
+        url: data.payment_link.url || data.payment_link.long_url,
       };
     } else {
-      throw new Error('Checkout link creation failed: ' + JSON.stringify(response.errors || 'Unknown error'));
+      throw new Error('Checkout link creation failed: No payment_link in response');
     }
   } catch (error) {
-    console.error('❌ [DEBUG] Error creating checkout link - Full Details:');
-    console.error('   Error type:', error.constructor.name);
-    console.error('   Error message:', error.message);
-    console.error('   Status code:', error.statusCode);
-    console.error('   Error category:', error.errors?.[0]?.category);
-    console.error('   Error code:', error.errors?.[0]?.code);
-    console.error('   Error detail:', error.errors?.[0]?.detail);
-    console.error('   Error field:', error.errors?.[0]?.field);
-    console.error('   Full error object:', JSON.stringify({
-      statusCode: error.statusCode,
-      errors: error.errors,
-      body: error.body,
-      url: error.rawResponse?.url,
-      method: error.rawResponse?.method,
-      headers: Object.fromEntries(error.rawResponse?.headers || [])
-    }, null, 2));
-
-    // Provide more detailed error information
-    if (error.errors && error.errors.length > 0) {
-      const errorDetails = error.errors.map(e => `${e.code}: ${e.detail}${e.field ? ` (field: ${e.field})` : ''}`).join(', ');
-      throw new Error(`Square API Error: ${errorDetails}`);
-    }
-    if (error.statusCode === 401) {
-      console.error('❌ [DEBUG] 401 Unauthorized - Authentication failed');
-      console.error('   This usually means:');
-      console.error('   1. Token is invalid, expired, or revoked');
-      console.error('   2. Token missing required OAuth scopes/permissions');
-      console.error('   3. Token is for wrong environment');
-      console.error('   4. Application not properly activated in Square Dashboard');
-      throw new Error('Square authentication failed. Please check your SQUARE_ACCESS_TOKEN is valid and has not expired.');
-    }
+    console.error('❌ [DEBUG] Error creating checkout link:', error.message);
     throw error;
   }
 }

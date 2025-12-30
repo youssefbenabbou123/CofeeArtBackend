@@ -167,3 +167,4 @@ Le backend est prêt à être testé et déployé !
 **Réalisé par**: Assistant AI
 **Pour**: CoffeeArt Paris E-commerce Platform
 
+

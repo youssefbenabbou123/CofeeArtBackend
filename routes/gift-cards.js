@@ -225,6 +225,181 @@ router.post('/purchase', optionalAuth, async (req, res) => {
   }
 });
 
+// POST /api/gift-cards/apply - Apply gift card to an order (calculates discount)
+router.post('/apply', optionalAuth, async (req, res) => {
+  try {
+    const { code, order_total } = req.body;
+
+    if (!code || !order_total || order_total <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Code de carte cadeau et montant total requis'
+      });
+    }
+
+    const giftCardsCollection = await getCollection('gift_cards');
+    const card = await giftCardsCollection.findOne({ code: code.toUpperCase() });
+
+    if (!card) {
+      return res.status(404).json({
+        success: false,
+        message: 'Carte cadeau non trouvée'
+      });
+    }
+
+    // Check if expired
+    if (card.expiry_date && new Date(card.expiry_date) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette carte cadeau a expiré'
+      });
+    }
+
+    // Check if active
+    if (card.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette carte cadeau n\'est pas active'
+      });
+    }
+
+    // Check balance
+    const balance = parseFloat(card.balance || 0);
+    if (balance <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette carte cadeau n\'a plus de solde'
+      });
+    }
+
+    // Calculate how much can be applied
+    const orderTotal = parseFloat(order_total);
+    const amountToApply = Math.min(balance, orderTotal);
+    const remainingToPay = Math.max(0, orderTotal - amountToApply);
+    const remainingBalance = balance - amountToApply;
+
+    res.json({
+      success: true,
+      message: 'Carte cadeau valide',
+      data: {
+        card_code: card.code,
+        card_balance: balance,
+        amount_applied: amountToApply,
+        remaining_to_pay: remainingToPay,
+        remaining_card_balance: remainingBalance,
+        fully_covered: remainingToPay === 0
+      }
+    });
+  } catch (error) {
+    console.error('Error applying gift card:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'application de la carte cadeau',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/gift-cards/redeem - Redeem gift card for an order (deducts balance)
+router.post('/redeem', optionalAuth, async (req, res) => {
+  try {
+    const { code, amount, order_id, order_type } = req.body;
+
+    if (!code || !amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Code de carte cadeau et montant requis'
+      });
+    }
+
+    const giftCardsCollection = await getCollection('gift_cards');
+    const transactionsCollection = await getCollection('gift_card_transactions');
+    
+    const card = await giftCardsCollection.findOne({ code: code.toUpperCase() });
+
+    if (!card) {
+      return res.status(404).json({
+        success: false,
+        message: 'Carte cadeau non trouvée'
+      });
+    }
+
+    // Check if expired
+    if (card.expiry_date && new Date(card.expiry_date) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette carte cadeau a expiré'
+      });
+    }
+
+    // Check if active
+    if (card.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette carte cadeau n\'est pas active'
+      });
+    }
+
+    // Check balance
+    const balance = parseFloat(card.balance || 0);
+    const amountToDeduct = parseFloat(amount);
+
+    if (balance < amountToDeduct) {
+      return res.status(400).json({
+        success: false,
+        message: `Solde insuffisant. Solde disponible: ${balance}€`
+      });
+    }
+
+    // Deduct balance
+    const newBalance = balance - amountToDeduct;
+    const newStatus = newBalance <= 0 ? 'used' : 'active';
+
+    await giftCardsCollection.updateOne(
+      { _id: card._id },
+      {
+        $set: {
+          balance: newBalance,
+          status: newStatus,
+          used: newBalance <= 0,
+          updated_at: new Date()
+        }
+      }
+    );
+
+    // Record transaction
+    await transactionsCollection.insertOne({
+      gift_card_id: card._id,
+      order_id: order_id || null,
+      amount: -amountToDeduct, // Negative for usage
+      transaction_type: 'usage',
+      notes: `Utilisation pour ${order_type || 'commande'}${order_id ? ` #${order_id}` : ''}`,
+      created_at: new Date()
+    });
+
+    console.log(`✅ Gift card ${code} redeemed: ${amountToDeduct}€ deducted. New balance: ${newBalance}€`);
+
+    res.json({
+      success: true,
+      message: 'Carte cadeau utilisée avec succès',
+      data: {
+        card_code: card.code,
+        amount_deducted: amountToDeduct,
+        previous_balance: balance,
+        new_balance: newBalance,
+        card_status: newStatus
+      }
+    });
+  } catch (error) {
+    console.error('Error redeeming gift card:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'utilisation de la carte cadeau',
+      error: error.message
+    });
+  }
+});
+
 // GET /api/gift-cards/check/:code - Check gift card validity (public)
 router.get('/check/:code', async (req, res) => {
   try {

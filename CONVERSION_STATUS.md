@@ -49,3 +49,4 @@ Pour continuer la conversion, il faut:
 - Les transactions doivent être gérées différemment (MongoDB supporte les transactions mais nécessite un replica set)
 - Certaines requêtes avec agrégations complexes peuvent nécessiter `aggregate()` au lieu de `find()`
 
+

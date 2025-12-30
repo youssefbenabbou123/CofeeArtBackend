@@ -76,7 +76,9 @@ router.post('/', optionalAuth, async (req, res) => {
       shipping_country,
       // Payment
       payment_method,
-      create_payment_intent
+      create_payment_intent,
+      // Gift card
+      gift_card_code
     } = req.body;
 
     // Validation
@@ -113,14 +115,87 @@ router.post('/', optionalAuth, async (req, res) => {
       }
     }
 
-    // Create Square checkout link if requested
+    // Handle gift card if provided
+    let giftCardApplied = null;
+    let amountToPay = total;
+    let giftCardAmount = 0;
+    
+    if (gift_card_code) {
+      try {
+        const giftCardsCollection = await getCollection('gift_cards');
+        const card = await giftCardsCollection.findOne({ code: gift_card_code.toUpperCase() });
+        
+        if (!card) {
+          return res.status(400).json({
+            success: false,
+            message: 'Carte cadeau non trouvée'
+          });
+        }
+        
+        // Check if expired
+        if (card.expiry_date && new Date(card.expiry_date) < new Date()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cette carte cadeau a expiré'
+          });
+        }
+        
+        // Check if active
+        if (card.status !== 'active') {
+          return res.status(400).json({
+            success: false,
+            message: 'Cette carte cadeau n\'est pas active'
+          });
+        }
+        
+        // Check category restriction - product orders can only use "boutique" or "libre" cards
+        const cardCategory = card.category;
+        const allowedCategories = ['boutique', 'libre'];
+        if (cardCategory && !allowedCategories.includes(cardCategory.toLowerCase())) {
+          return res.status(400).json({
+            success: false,
+            message: `Cette carte cadeau est réservée aux ${cardCategory === 'atelier' ? 'ateliers' : cardCategory}. Elle ne peut pas être utilisée pour des produits de la boutique.`
+          });
+        }
+        
+        const balance = parseFloat(card.balance || 0);
+        if (balance <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cette carte cadeau n\'a plus de solde'
+          });
+        }
+        
+        // Calculate how much to apply
+        giftCardAmount = Math.min(balance, total);
+        amountToPay = Math.round((total - giftCardAmount) * 100) / 100; // Round to 2 decimals
+        
+        giftCardApplied = {
+          code: card.code,
+          card_id: card._id,
+          amount_applied: giftCardAmount,
+          previous_balance: balance,
+          new_balance: balance - giftCardAmount
+        };
+        
+        console.log(`🎁 Gift card ${card.code} applied: ${giftCardAmount}€ (Remaining to pay: ${amountToPay}€)`);
+      } catch (giftCardError) {
+        console.error('Error applying gift card:', giftCardError);
+        return res.status(500).json({
+          success: false,
+          message: 'Erreur lors de l\'application de la carte cadeau'
+        });
+      }
+    }
+
+    // Create Square checkout link if there's still an amount to pay
     let checkoutUrl = null;
     let checkoutSessionId = null;
     let squareError = null;
     
-    if (create_payment_intent) {
-      const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAlwdJ7P_xs8TsIIhZcpYwoUHemvlji3dN7h1qfcapjYOma7l0tu7RComJIGuj';
-      const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+    if (create_payment_intent && amountToPay > 0) {
+      const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+      const applicationId = process.env.SQUARE_APPLICATION_ID;
       
       if (!accessToken || !applicationId) {
         console.error('❌ SQUARE_ACCESS_TOKEN or SQUARE_APPLICATION_ID is not set in environment variables');
@@ -129,7 +204,7 @@ router.post('/', optionalAuth, async (req, res) => {
         squareError = 'Square credentials not configured';
       } else {
         try {
-          console.log('🔄 Creating Square checkout link for amount:', total, 'EUR');
+          console.log('🔄 Creating Square checkout link for amount:', amountToPay, 'EUR');
           
           // Get frontend URL for redirects
           const getFrontendUrl = () => {
@@ -152,16 +227,21 @@ router.post('/', optionalAuth, async (req, res) => {
           const successUrl = `${frontendUrl}/boutique?order=success`;
           const cancelUrl = `${frontendUrl}/panier?cancelled=true`;
           
-          const lineItems = items.map(item => ({
-            name: `Product ${item.id}`,
-            quantity: item.quantity,
-            amount: item.price * item.quantity,
-          }));
+          // Create line items for the remaining amount
+          const lineItems = [{
+            name: giftCardApplied 
+              ? `Commande (après carte cadeau ${giftCardApplied.code})`
+              : 'Commande',
+            quantity: 1,
+            amount: amountToPay,
+          }];
           
           const checkoutResult = await createCheckoutLink(lineItems, successUrl, cancelUrl, {
             order_type: 'product',
             guest_email: guest_email || null,
-            user_id: userId || null
+            user_id: userId || null,
+            gift_card_code: gift_card_code || null,
+            gift_card_amount: giftCardAmount || null
           });
           
           checkoutSessionId = checkoutResult.id;
@@ -174,12 +254,25 @@ router.post('/', optionalAuth, async (req, res) => {
           squareError = err.message || 'Failed to create checkout link';
         }
       }
+    } else if (giftCardApplied && amountToPay === 0) {
+      // Gift card covers the full amount - no checkout needed
+      console.log('✅ Gift card covers full amount - no checkout needed');
     }
 
     const ordersCollection = await getCollection('orders');
     const orderItemsCollection = await getCollection('order_items');
+    const giftCardsCollection = await getCollection('gift_cards');
+    const giftCardTransactionsCollection = await getCollection('gift_card_transactions');
     
     try {
+      // Determine payment status
+      let paymentStatus = 'unpaid';
+      if (giftCardApplied && amountToPay === 0) {
+        paymentStatus = 'paid'; // Fully covered by gift card
+      } else if (checkoutSessionId) {
+        paymentStatus = 'pending'; // Waiting for checkout
+      }
+
       // Create order
       const orderData = {
         user_id: userId || null,
@@ -192,14 +285,49 @@ router.post('/', optionalAuth, async (req, res) => {
         shipping_postal_code: shipping_postal_code || null,
         shipping_country: shipping_country || 'France',
         status: 'confirmed',
-        payment_status: checkoutSessionId ? 'pending' : 'unpaid',
-        payment_method: payment_method || null,
+        payment_status: paymentStatus,
+        payment_method: giftCardApplied ? (amountToPay > 0 ? 'gift_card_partial' : 'gift_card') : (payment_method || null),
         square_payment_id: checkoutSessionId || null,
+        // Gift card info
+        gift_card_code: giftCardApplied?.code || null,
+        gift_card_amount: giftCardAmount || null,
+        amount_paid_by_card: amountToPay > 0 ? null : 0, // Will be set after checkout
         created_at: new Date()
       };
 
       const orderResult = await ordersCollection.insertOne(orderData);
       const orderId = orderResult.insertedId;
+
+      // If gift card fully covers the order, redeem it now
+      if (giftCardApplied && amountToPay === 0) {
+        // Deduct from gift card balance
+        const newBalance = giftCardApplied.new_balance;
+        const newStatus = newBalance <= 0 ? 'used' : 'active';
+        
+        await giftCardsCollection.updateOne(
+          { _id: giftCardApplied.card_id },
+          {
+            $set: {
+              balance: newBalance,
+              status: newStatus,
+              used: newBalance <= 0,
+              updated_at: new Date()
+            }
+          }
+        );
+
+        // Record transaction
+        await giftCardTransactionsCollection.insertOne({
+          gift_card_id: giftCardApplied.card_id,
+          order_id: orderId,
+          amount: -giftCardAmount, // Negative for usage
+          transaction_type: 'usage',
+          notes: `Commande #${orderId}`,
+          created_at: new Date()
+        });
+
+        console.log(`✅ Gift card ${giftCardApplied.code} redeemed: ${giftCardAmount}€ deducted. New balance: ${newBalance}€`);
+      }
 
       // Create order items
       const orderItems = items.map(item => ({
@@ -257,7 +385,7 @@ router.post('/', optionalAuth, async (req, res) => {
           console.log('✅ Checkout link included in order response');
         } else {
           console.warn('⚠️  Checkout link was requested but not created');
-          console.warn('   Square credentials available:', !!(process.env.SQUARE_ACCESS_TOKEN || 'EAAAlwdJ7P_xs8TsIIhZcpYwoUHemvlji3dN7h1qfcapjYOma7l0tu7RComJIGuj'));
+          console.warn('   Square credentials available:', !!process.env.SQUARE_ACCESS_TOKEN);
           if (squareError) {
             console.warn('   Error reason:', squareError);
           }
@@ -266,17 +394,28 @@ router.post('/', optionalAuth, async (req, res) => {
 
       res.status(201).json({
         success: true,
-        message: 'Commande créée avec succès',
+        message: giftCardApplied && amountToPay === 0 
+          ? 'Commande créée et payée avec votre carte cadeau' 
+          : 'Commande créée avec succès',
         data: {
           order_id: order.id,
           total: total,
           created_at: order.created_at,
+          // Gift card info
+          gift_card: giftCardApplied ? {
+            code: giftCardApplied.code,
+            amount_applied: giftCardAmount,
+            remaining_balance: giftCardApplied.new_balance,
+            fully_covered: amountToPay === 0
+          } : null,
+          amount_to_pay: amountToPay,
+          // Checkout info (only if there's remaining amount)
           checkout: checkoutUrl ? {
             checkout_url: checkoutUrl,
             checkout_session_id: checkoutSessionId
           } : null,
           // Include error info if checkout was requested but failed
-          ...(create_payment_intent && !checkoutUrl && squareError ? {
+          ...(create_payment_intent && amountToPay > 0 && !checkoutUrl && squareError ? {
             payment_intent_error: squareError
           } : {})
         }

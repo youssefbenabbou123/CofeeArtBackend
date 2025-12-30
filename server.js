@@ -18,12 +18,13 @@ import adminClientsRouter from './routes/admin/clients.js';
 import adminGiftCardsRouter from './routes/admin/gift-cards.js';
 import giftCardsRouter from './routes/gift-cards.js';
 import squareRouter from './routes/square.js';
+import squareWebhookRouter from './routes/square-webhook.js';
 
 dotenv.config();
 
 // Log Square configuration status on startup
-const accessToken = process.env.SQUARE_ACCESS_TOKEN || 'EAAAl9UEyMZ8UQ0EuKqWOkS4rt_vgJ5H7H9CBHruBXSnDOBtcu53FmG_z7ji1vP7';
-const applicationId = process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-UaHTFB2o4haHG5ZUmAL1Ag';
+const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+const applicationId = process.env.SQUARE_APPLICATION_ID;
 if (accessToken && applicationId) {
   console.log('✅ Square credentials are configured');
 } else {
@@ -209,6 +210,7 @@ app.use('/api/admin/clients', adminClientsRouter);
 app.use('/api/admin/gift-cards', adminGiftCardsRouter);
 app.use('/api/gift-cards', giftCardsRouter);
 app.use('/api/square', squareRouter);
+app.use('/api/square', squareWebhookRouter); // Square webhooks
 
 // ---------------- ERROR HANDLING ---------------- //
 app.use((err, req, res, next) => {

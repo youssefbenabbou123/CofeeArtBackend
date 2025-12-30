@@ -120,3 +120,4 @@ Si vous rencontrez des problèmes :
 3. Vérifiez que toutes les variables d'environnement sont correctes
 4. Vérifiez que PostgreSQL est toujours accessible pour la migration
 
+

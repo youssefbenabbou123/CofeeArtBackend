@@ -7,3 +7,4 @@ export async function testConnection() {
   throw new Error('db.js is deprecated. Use db-mongodb.js for MongoDB or db.postgres.js for PostgreSQL migrations.');
 }
 
+

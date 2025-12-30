@@ -122,6 +122,9 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Permanent statuses that cannot be changed
+const PERMANENT_STATUSES = ['cancelled', 'refunded'];
+
 // PUT /api/admin/orders/:id/status - Update order status
 router.put('/:id/status', async (req, res) => {
   try {
@@ -144,6 +147,133 @@ router.put('/:id/status', async (req, res) => {
     }
 
     const ordersCollection = await getCollection('orders');
+    
+    // Get current order to check if it's in a permanent status
+    const currentOrder = await ordersCollection.findOne({ _id: id });
+    if (!currentOrder) {
+      return res.status(404).json({
+        success: false,
+        message: 'Commande non trouvée'
+      });
+    }
+
+    // Check if order is in a permanent status
+    if (PERMANENT_STATUSES.includes(currentOrder.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cette commande est ${currentOrder.status === 'refunded' ? 'remboursée' : 'annulée'} et ne peut plus être modifiée`
+      });
+    }
+
+    // If status is being changed to 'cancelled', trigger refund
+    if (status === 'cancelled') {
+      // Import refund logic inline to avoid circular dependencies
+      const giftCardsCollection = await getCollection('gift_cards');
+      const giftCardTransactionsCollection = await getCollection('gift_card_transactions');
+      
+      const totalAmount = parseFloat(currentOrder.total);
+      const giftCardAmount = parseFloat(currentOrder.gift_card_amount || 0);
+      const squareAmount = totalAmount - giftCardAmount;
+      
+      let squareRefundResult = null;
+      const refundDetails = {
+        total_refunded: totalAmount,
+        square_refunded: 0,
+        gift_card_refunded: 0,
+        methods: []
+      };
+
+      // Refund Square payment if applicable
+      if (currentOrder.square_payment_id && squareAmount > 0) {
+        try {
+          squareRefundResult = await processRefund(
+            currentOrder.square_payment_id,
+            squareAmount,
+            'ORDER_CANCELLED'
+          );
+          refundDetails.square_refunded = squareAmount;
+          refundDetails.methods.push('Square');
+        } catch (squareError) {
+          console.error('Square refund failed during cancellation:', squareError.message);
+          return res.status(500).json({
+            success: false,
+            message: 'Erreur lors du remboursement Square',
+            error: squareError.message
+          });
+        }
+      }
+
+      // Restore gift card balance if applicable
+      if (currentOrder.gift_card_code && giftCardAmount > 0) {
+        try {
+          const giftCard = await giftCardsCollection.findOne({ 
+            code: currentOrder.gift_card_code.toUpperCase() 
+          });
+
+          if (giftCard) {
+            const currentBalance = parseFloat(giftCard.balance || 0);
+            const newBalance = currentBalance + giftCardAmount;
+
+            await giftCardsCollection.updateOne(
+              { _id: giftCard._id },
+              {
+                $set: {
+                  balance: newBalance,
+                  status: 'active',
+                  used: false,
+                  updated_at: new Date()
+                }
+              }
+            );
+
+            await giftCardTransactionsCollection.insertOne({
+              gift_card_id: giftCard._id,
+              order_id: id,
+              amount: giftCardAmount,
+              transaction_type: 'refund',
+              notes: `Remboursement commande annulée #${id.substring(0, 8)}`,
+              created_at: new Date()
+            });
+
+            refundDetails.gift_card_refunded = giftCardAmount;
+            refundDetails.methods.push('Carte cadeau');
+          }
+        } catch (giftCardError) {
+          console.error('Gift card refund failed during cancellation:', giftCardError);
+        }
+      }
+
+      // Update order to cancelled with refund info
+      await ordersCollection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            status: 'cancelled',
+            payment_status: 'refunded',
+            refund_amount: totalAmount,
+            refund_reason: 'Commande annulée',
+            refunded_at: new Date(),
+            refund_details: refundDetails,
+            square_refund_id: squareRefundResult?.refundId || null,
+            updated_at: new Date()
+          }
+        }
+      );
+
+      const updatedOrder = await ordersCollection.findOne({ _id: id });
+      console.log(`✅ Order ${id} cancelled and refunded`);
+
+      return res.json({
+        success: true,
+        message: 'Commande annulée et remboursée',
+        data: {
+          id: updatedOrder._id,
+          ...updatedOrder
+        }
+      });
+    }
+
+    // For other status changes, just update status
     const result = await ordersCollection.updateOne(
       { _id: id },
       {
@@ -153,13 +283,6 @@ router.put('/:id/status', async (req, res) => {
         }
       }
     );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Commande non trouvée'
-      });
-    }
 
     const updatedOrder = await ordersCollection.findOne({ _id: id });
     console.log(`✅ Order ${id} status updated to: ${status}`);
@@ -187,13 +310,15 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
-// PUT /api/admin/orders/:id/refund - Process refund
+// PUT /api/admin/orders/:id/refund - Process full refund
 router.put('/:id/refund', async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, reason } = req.body;
+    const { reason } = req.body;
 
     const ordersCollection = await getCollection('orders');
+    const giftCardsCollection = await getCollection('gift_cards');
+    const giftCardTransactionsCollection = await getCollection('gift_card_transactions');
     
     // Get order
     const order = await ordersCollection.findOne({ _id: id });
@@ -204,66 +329,141 @@ router.put('/:id/refund', async (req, res) => {
         message: 'Commande non trouvée'
       });
     }
-    const refundAmount = amount || parseFloat(order.total);
 
-    // Process Square refund if payment was made via Square
-    if (order.square_payment_id) {
+    // Check if order is already refunded or cancelled
+    if (PERMANENT_STATUSES.includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cette commande est déjà ${order.status === 'refunded' ? 'remboursée' : 'annulée'} et ne peut plus être modifiée`
+      });
+    }
+
+    const totalAmount = parseFloat(order.total);
+    const giftCardAmount = parseFloat(order.gift_card_amount || 0);
+    const squareAmount = totalAmount - giftCardAmount; // Amount paid via Square
+    
+    let squareRefundResult = null;
+    let giftCardRefundResult = null;
+    const refundDetails = {
+      total_refunded: totalAmount,
+      square_refunded: 0,
+      gift_card_refunded: 0,
+      methods: []
+    };
+
+    console.log(`💰 Processing refund for order ${id}:`);
+    console.log(`   Total: ${totalAmount}€`);
+    console.log(`   Gift card: ${giftCardAmount}€`);
+    console.log(`   Square: ${squareAmount}€`);
+
+    // 1. Refund Square payment if applicable
+    if (order.square_payment_id && squareAmount > 0) {
       try {
-        const refundResult = await processRefund(
+        console.log(`   🔄 Processing Square refund: ${squareAmount}€`);
+        squareRefundResult = await processRefund(
           order.square_payment_id,
-          refundAmount,
+          squareAmount,
           reason || 'REQUESTED_BY_CUSTOMER'
         );
-
-        // Update order
-        await ordersCollection.updateOne(
-          { _id: id },
-          {
-            $set: {
-              refund_amount: refundAmount,
-              refund_reason: reason,
-              refunded_at: new Date(),
-              status: 'refunded',
-              payment_status: 'refunded'
-            }
-          }
-        );
-
-        res.json({
-          success: true,
-          message: 'Remboursement effectué',
-          data: {
-            refundId: refundResult.refundId,
-            amount: refundAmount
-          }
-        });
+        refundDetails.square_refunded = squareAmount;
+        refundDetails.methods.push('Square');
+        console.log(`   ✅ Square refund successful: ${squareRefundResult.refundId}`);
       } catch (squareError) {
+        console.error('   ❌ Square refund failed:', squareError.message);
         return res.status(500).json({
           success: false,
           message: 'Erreur lors du remboursement Square',
           error: squareError.message
         });
       }
-    } else {
-      // Manual refund (no Stripe)
-      await ordersCollection.updateOne(
-        { _id: id },
-        {
-          $set: {
-            refund_amount: refundAmount,
-            refund_reason: reason,
-            refunded_at: new Date(),
-            status: 'refunded'
-          }
-        }
-      );
-
-      res.json({
-        success: true,
-        message: 'Remboursement enregistré (manuel)',
-        data: { amount: refundAmount }
-      });
     }
+
+    // 2. Restore gift card balance if applicable
+    if (order.gift_card_code && giftCardAmount > 0) {
+      try {
+        console.log(`   🔄 Restoring gift card balance: ${giftCardAmount}€`);
+        
+        // Find the gift card
+        const giftCard = await giftCardsCollection.findOne({ 
+          code: order.gift_card_code.toUpperCase() 
+        });
+
+        if (giftCard) {
+          const currentBalance = parseFloat(giftCard.balance || 0);
+          const newBalance = currentBalance + giftCardAmount;
+
+          // Update gift card balance
+          await giftCardsCollection.updateOne(
+            { _id: giftCard._id },
+            {
+              $set: {
+                balance: newBalance,
+                status: 'active', // Reactivate if it was 'used'
+                used: false,
+                updated_at: new Date()
+              }
+            }
+          );
+
+          // Record refund transaction
+          await giftCardTransactionsCollection.insertOne({
+            gift_card_id: giftCard._id,
+            order_id: id,
+            amount: giftCardAmount, // Positive for refund
+            transaction_type: 'refund',
+            notes: `Remboursement commande #${id.substring(0, 8)} - ${reason || 'Demande client'}`,
+            created_at: new Date()
+          });
+
+          giftCardRefundResult = {
+            code: giftCard.code,
+            previousBalance: currentBalance,
+            newBalance: newBalance
+          };
+          refundDetails.gift_card_refunded = giftCardAmount;
+          refundDetails.methods.push('Carte cadeau');
+          console.log(`   ✅ Gift card ${giftCard.code} balance restored: ${currentBalance}€ → ${newBalance}€`);
+        } else {
+          console.warn(`   ⚠️ Gift card ${order.gift_card_code} not found - skipping gift card refund`);
+        }
+      } catch (giftCardError) {
+        console.error('   ❌ Gift card refund failed:', giftCardError.message);
+        // Don't fail the entire refund if gift card restore fails, but log it
+        // The Square refund was already processed, so we continue
+      }
+    }
+
+    // 3. Update order status
+    await ordersCollection.updateOne(
+      { _id: id },
+      {
+        $set: {
+          refund_amount: totalAmount,
+          refund_reason: reason || 'Demande client',
+          refunded_at: new Date(),
+          status: 'refunded',
+          payment_status: 'refunded',
+          refund_details: refundDetails,
+          square_refund_id: squareRefundResult?.refundId || null,
+          updated_at: new Date()
+        }
+      }
+    );
+
+    console.log(`✅ Order ${id} fully refunded`);
+
+    res.json({
+      success: true,
+      message: 'Remboursement effectué avec succès',
+      data: {
+        order_id: id,
+        total_refunded: totalAmount,
+        refund_details: refundDetails,
+        square_refund: squareRefundResult,
+        gift_card_refund: giftCardRefundResult
+      }
+    });
+
   } catch (error) {
     console.error('Error processing refund:', error);
     res.status(500).json({

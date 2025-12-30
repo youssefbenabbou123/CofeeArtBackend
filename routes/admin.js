@@ -1,6 +1,7 @@
 import express from 'express';
 import { getCollection } from '../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../middleware/auth.js';
+import { sendRawEmail } from '../services/email.js';
 
 const router = express.Router();
 
@@ -464,7 +465,12 @@ router.get('/categories', async (req, res) => {
 
     res.json({
       success: true,
-      data: categories.map(cat => ({ id: cat._id, name: cat.name, created_at: cat.created_at }))
+      data: categories.map(cat => ({ 
+        id: cat._id, 
+        name: cat.name, 
+        type: cat.type || null,
+        created_at: cat.created_at 
+      }))
     });
   } catch (error) {
     console.error('Error fetching categories:', error);
@@ -494,12 +500,20 @@ router.get('/categories', async (req, res) => {
 // POST /api/admin/categories - Create new category
 router.post('/categories', async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, type } = req.body;
 
     if (!name || name.trim() === '') {
       return res.status(400).json({
         success: false,
         message: 'Le nom de la catégorie est requis'
+      });
+    }
+
+    // Validate type if provided
+    if (type && !['ceramic', 'goodies'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le type doit être "ceramic" ou "goodies"'
       });
     }
 
@@ -516,6 +530,7 @@ router.post('/categories', async (req, res) => {
 
     const categoryData = {
       name: name.trim(),
+      type: type || null, // 'ceramic' or 'goodies' or null for old categories
       created_at: new Date()
     };
 
@@ -1113,12 +1128,34 @@ router.get('/products/export', async (req, res) => {
 // GET /api/admin/messages - List contact form messages
 router.get('/messages', async (req, res) => {
   try {
-    const { read, subject } = req.query;
+    const { read, replied, subject } = req.query;
     const messagesCollection = await getCollection('contact_messages');
     
-    const query = {};
-    if (read !== undefined) query.read = read === 'true';
-    if (subject) query.subject = { $regex: subject, $options: 'i' };
+    // Build query conditions
+    const conditions = [];
+    
+    if (read !== undefined) {
+      conditions.push({ read: read === 'true' });
+    }
+    
+    // Handle replied filter - include messages where replied doesn't exist (old messages)
+    if (replied !== undefined) {
+      if (replied === 'true') {
+        conditions.push({ replied: true });
+      } else {
+        // For non-replied, include messages where replied is false OR doesn't exist
+        conditions.push({ 
+          $or: [{ replied: false }, { replied: { $exists: false } }, { replied: null }] 
+        });
+      }
+    }
+    
+    if (subject) {
+      conditions.push({ subject: { $regex: subject, $options: 'i' } });
+    }
+
+    // Build final query
+    const query = conditions.length > 0 ? { $and: conditions } : {};
 
     const messages = await messagesCollection.find(query)
       .sort({ created_at: -1 })
@@ -1133,6 +1170,10 @@ router.get('/messages', async (req, res) => {
         subject: m.subject,
         message: m.message,
         read: m.read,
+        replied: m.replied || false,
+        replied_at: m.replied_at || null,
+        reply_subject: m.reply_subject || null,
+        reply_message: m.reply_message || null,
         created_at: m.created_at
       }))
     });
@@ -1220,6 +1261,126 @@ router.delete('/messages/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la suppression du message',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// POST /api/admin/messages/:id/reply - Reply to a message
+router.post('/messages/:id/reply', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { subject, message: replyMessage } = req.body;
+
+    if (!replyMessage || replyMessage.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Le message de réponse est requis'
+      });
+    }
+
+    const messagesCollection = await getCollection('contact_messages');
+    const originalMessage = await messagesCollection.findOne({ _id: id });
+
+    if (!originalMessage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Message non trouvé'
+      });
+    }
+
+    // Build the email HTML
+    const emailSubject = subject || `Re: ${originalMessage.subject}`;
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #8B7355; color: white; padding: 20px; text-align: center; }
+          .content { padding: 20px; background: #f9f9f9; }
+          .original-message { background: #e9e9e9; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #8B7355; }
+          .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Coffee Arts Paris</h1>
+          </div>
+          <div class="content">
+            <p>Bonjour ${originalMessage.name},</p>
+            <div style="white-space: pre-wrap;">${replyMessage}</div>
+            <div class="original-message">
+              <p><strong>Votre message original :</strong></p>
+              <p><em>${originalMessage.message}</em></p>
+            </div>
+            <p>Cordialement,<br>L'équipe Coffee Arts Paris</p>
+          </div>
+          <div class="footer">
+            <p>Coffee Arts Paris - Votre espace créatif à Paris</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Send the email
+    const emailResult = await sendRawEmail(
+      originalMessage.email,
+      emailSubject,
+      emailHtml,
+      `Bonjour ${originalMessage.name},\n\n${replyMessage}\n\n---\nVotre message original:\n${originalMessage.message}\n\nCordialement,\nL'équipe Coffee Arts Paris`
+    );
+
+    if (!emailResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Erreur lors de l\'envoi de l\'email: ' + (emailResult.error || 'Erreur inconnue')
+      });
+    }
+
+    // Update the message as replied
+    const now = new Date();
+    await messagesCollection.updateOne(
+      { _id: id },
+      { 
+        $set: { 
+          replied: true, 
+          replied_at: now,
+          reply_subject: emailSubject,
+          reply_message: replyMessage,
+          read: true // Also mark as read
+        } 
+      }
+    );
+
+    const updated = await messagesCollection.findOne({ _id: id });
+
+    res.json({
+      success: true,
+      message: 'Réponse envoyée avec succès',
+      data: {
+        id: updated._id,
+        name: updated.name,
+        email: updated.email,
+        subject: updated.subject,
+        message: updated.message,
+        read: updated.read,
+        replied: updated.replied,
+        replied_at: updated.replied_at,
+        reply_subject: updated.reply_subject,
+        reply_message: updated.reply_message,
+        created_at: updated.created_at
+      }
+    });
+  } catch (error) {
+    console.error('Error replying to message:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'envoi de la réponse',
       ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }

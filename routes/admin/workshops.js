@@ -2,8 +2,12 @@ import express from 'express';
 import { getCollection } from '../../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../../middleware/auth.js';
 import { sendWorkshopCancellation } from '../../services/email.js';
+import { processRefund } from '../../services/square.js';
 
 const router = express.Router();
+
+// Permanent statuses that cannot be changed
+const PERMANENT_RESERVATION_STATUSES = ['cancelled', 'refunded'];
 
 // All routes require admin authentication
 router.use(verifyToken);
@@ -582,15 +586,17 @@ router.post('/:id/bookings', async (req, res) => {
   }
 });
 
-// PUT /api/admin/workshops/bookings/:id/cancel - Cancel booking
+// PUT /api/admin/workshops/bookings/:id/cancel - Cancel booking (with refund)
 router.put('/bookings/:id/cancel', async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason, refund_amount, send_email } = req.body;
+    const { reason, send_email } = req.body;
 
     const reservationsCollection = await getCollection('reservations');
     const workshopsCollection = await getCollection('workshops');
     const sessionsCollection = await getCollection('workshop_sessions');
+    const giftCardsCollection = await getCollection('gift_cards');
+    const giftCardTransactionsCollection = await getCollection('gift_card_transactions');
 
     // Get reservation
     const reservation = await reservationsCollection.findOne({ _id: id });
@@ -602,31 +608,112 @@ router.put('/bookings/:id/cancel', async (req, res) => {
       });
     }
 
-    const workshop = await workshopsCollection.findOne({ _id: reservation.workshop_id });
-    const session = await sessionsCollection.findOne({ _id: reservation.session_id });
-
-    if (reservation.cancelled_at) {
+    // Check if already in permanent status
+    if (PERMANENT_RESERVATION_STATUSES.includes(reservation.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Réservation déjà annulée'
+        message: `Cette réservation est déjà ${reservation.status === 'refunded' ? 'remboursée' : 'annulée'} et ne peut plus être modifiée`
       });
     }
 
+    const workshop = await workshopsCollection.findOne({ _id: reservation.workshop_id });
+    const session = await sessionsCollection.findOne({ _id: reservation.session_id });
+
+    // Calculate amounts for refund
+    const giftCardAmount = parseFloat(reservation.gift_card_amount || 0);
+    const squareAmount = parseFloat(reservation.amount_paid || 0);
+    const totalAmount = giftCardAmount + squareAmount;
+
+    const refundDetails = {
+      total_refunded: totalAmount,
+      square_refunded: 0,
+      gift_card_refunded: 0,
+      methods: []
+    };
+
+    let squareRefundResult = null;
+
+    // 1. Refund Square payment if applicable
+    if (reservation.square_payment_id && squareAmount > 0) {
+      try {
+        squareRefundResult = await processRefund(
+          reservation.square_payment_id,
+          squareAmount,
+          'RESERVATION_CANCELLED'
+        );
+        refundDetails.square_refunded = squareAmount;
+        refundDetails.methods.push('Square');
+      } catch (squareError) {
+        console.error('Square refund failed during cancellation:', squareError.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Erreur lors du remboursement Square',
+          error: squareError.message
+        });
+      }
+    }
+
+    // 2. Restore gift card balance if applicable
+    if (reservation.gift_card_code && giftCardAmount > 0) {
+      try {
+        const giftCard = await giftCardsCollection.findOne({ 
+          code: reservation.gift_card_code.toUpperCase() 
+        });
+
+        if (giftCard) {
+          const currentBalance = parseFloat(giftCard.balance || 0);
+          const newBalance = currentBalance + giftCardAmount;
+
+          await giftCardsCollection.updateOne(
+            { _id: giftCard._id },
+            {
+              $set: {
+                balance: newBalance,
+                status: 'active',
+                used: false,
+                updated_at: new Date()
+              }
+            }
+          );
+
+          await giftCardTransactionsCollection.insertOne({
+            gift_card_id: giftCard._id,
+            reservation_id: id,
+            amount: giftCardAmount,
+            transaction_type: 'refund',
+            notes: `Remboursement réservation annulée #${id.substring(0, 8)}`,
+            created_at: new Date()
+          });
+
+          refundDetails.gift_card_refunded = giftCardAmount;
+          refundDetails.methods.push('Carte cadeau');
+        }
+      } catch (giftCardError) {
+        console.error('Gift card refund failed during cancellation:', giftCardError);
+      }
+    }
+
     try {
-      // Update reservation
+      // Update reservation to cancelled with refund info
       await reservationsCollection.updateOne(
         { _id: id },
         {
           $set: {
             status: 'cancelled',
             cancelled_at: new Date(),
-            cancellation_reason: reason || null
+            cancellation_reason: reason || 'Demande client',
+            refund_amount: totalAmount,
+            refund_reason: 'Réservation annulée',
+            refunded_at: new Date(),
+            refund_details: refundDetails,
+            square_refund_id: squareRefundResult?.refundId || null,
+            updated_at: new Date()
           }
         }
       );
 
       // Update session booked count if confirmed
-      if (reservation.status === 'confirmed') {
+      if (reservation.status === 'confirmed' || reservation.status === 'pending') {
         await sessionsCollection.updateOne(
           { _id: reservation.session_id },
           { $inc: { booked_count: -reservation.quantity } }
@@ -634,23 +721,26 @@ router.put('/bookings/:id/cancel', async (req, res) => {
       }
 
       // Send cancellation email if requested
-      if (send_email && (reservation.guest_email || reservation.user_id)) {
-        const email = reservation.guest_email;
-        if (email) {
-          await sendWorkshopCancellation(email, {
-            participantName: reservation.guest_name || 'Participant',
-            workshopTitle: workshop?.title || '',
-            sessionDate: session?.session_date || null,
-            reason: reason,
-            refundAmount: refund_amount
-          });
-        }
+      if (send_email && reservation.guest_email) {
+        await sendWorkshopCancellation(reservation.guest_email, {
+          participantName: reservation.guest_name || 'Participant',
+          workshopTitle: workshop?.title || '',
+          sessionDate: session?.session_date || null,
+          reason: reason,
+          refundAmount: totalAmount
+        });
       }
 
       res.json({
         success: true,
-        message: 'Réservation annulée',
-        data: { ...reservation, cancelled_at: new Date() }
+        message: 'Réservation annulée et remboursée',
+        data: { 
+          ...reservation, 
+          status: 'cancelled', 
+          cancelled_at: new Date(),
+          refund_amount: totalAmount,
+          refund_details: refundDetails
+        }
       });
     } catch (error) {
       throw error;
@@ -660,6 +750,198 @@ router.put('/bookings/:id/cancel', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'annulation',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// PUT /api/admin/workshops/bookings/:id/refund - Refund booking (with money refund)
+router.put('/bookings/:id/refund', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason, send_email } = req.body;
+
+    const reservationsCollection = await getCollection('reservations');
+    const workshopsCollection = await getCollection('workshops');
+    const sessionsCollection = await getCollection('workshop_sessions');
+    const giftCardsCollection = await getCollection('gift_cards');
+    const giftCardTransactionsCollection = await getCollection('gift_card_transactions');
+
+    // Get reservation
+    const reservation = await reservationsCollection.findOne({ _id: id });
+
+    if (!reservation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Réservation non trouvée'
+      });
+    }
+
+    // Check if already in permanent status
+    if (PERMANENT_RESERVATION_STATUSES.includes(reservation.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cette réservation est déjà ${reservation.status === 'refunded' ? 'remboursée' : 'annulée'} et ne peut plus être modifiée`
+      });
+    }
+
+    const workshop = await workshopsCollection.findOne({ _id: reservation.workshop_id });
+    const session = await sessionsCollection.findOne({ _id: reservation.session_id });
+
+    // Calculate amounts
+    const giftCardAmount = parseFloat(reservation.gift_card_amount || 0);
+    const squareAmount = parseFloat(reservation.amount_paid || 0);
+    const totalAmount = giftCardAmount + squareAmount;
+
+    const refundDetails = {
+      total_refunded: totalAmount,
+      square_refunded: 0,
+      gift_card_refunded: 0,
+      methods: []
+    };
+
+    let squareRefundResult = null;
+    let giftCardRefundResult = null;
+
+    console.log(`💰 Processing refund for workshop reservation ${id}:`);
+    console.log(`   Total: ${totalAmount}€`);
+    console.log(`   Gift card: ${giftCardAmount}€`);
+    console.log(`   Square: ${squareAmount}€`);
+
+    // 1. Refund Square payment if applicable
+    if (reservation.square_payment_id && squareAmount > 0) {
+      try {
+        console.log(`   🔄 Processing Square refund: ${squareAmount}€`);
+        squareRefundResult = await processRefund(
+          reservation.square_payment_id,
+          squareAmount,
+          reason || 'REQUESTED_BY_CUSTOMER'
+        );
+        refundDetails.square_refunded = squareAmount;
+        refundDetails.methods.push('Square');
+        console.log(`   ✅ Square refund successful: ${squareRefundResult.refundId}`);
+      } catch (squareError) {
+        console.error('   ❌ Square refund failed:', squareError.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Erreur lors du remboursement Square',
+          error: squareError.message
+        });
+      }
+    }
+
+    // 2. Restore gift card balance if applicable
+    if (reservation.gift_card_code && giftCardAmount > 0) {
+      try {
+        console.log(`   🔄 Restoring gift card balance: ${giftCardAmount}€`);
+        
+        const giftCard = await giftCardsCollection.findOne({ 
+          code: reservation.gift_card_code.toUpperCase() 
+        });
+
+        if (giftCard) {
+          const currentBalance = parseFloat(giftCard.balance || 0);
+          const newBalance = currentBalance + giftCardAmount;
+
+          // Update gift card balance
+          await giftCardsCollection.updateOne(
+            { _id: giftCard._id },
+            {
+              $set: {
+                balance: newBalance,
+                status: 'active',
+                used: false,
+                updated_at: new Date()
+              }
+            }
+          );
+
+          // Record refund transaction
+          await giftCardTransactionsCollection.insertOne({
+            gift_card_id: giftCard._id,
+            reservation_id: id,
+            amount: giftCardAmount, // Positive for refund
+            transaction_type: 'refund',
+            notes: `Remboursement réservation atelier #${id.substring(0, 8)} - ${reason || 'Demande client'}`,
+            created_at: new Date()
+          });
+
+          giftCardRefundResult = {
+            code: giftCard.code,
+            previousBalance: currentBalance,
+            newBalance: newBalance
+          };
+          refundDetails.gift_card_refunded = giftCardAmount;
+          refundDetails.methods.push('Carte cadeau');
+          console.log(`   ✅ Gift card ${giftCard.code} balance restored: ${currentBalance}€ → ${newBalance}€`);
+        } else {
+          console.warn(`   ⚠️ Gift card ${reservation.gift_card_code} not found - skipping gift card refund`);
+        }
+      } catch (giftCardError) {
+        console.error('   ❌ Gift card refund failed:', giftCardError.message);
+        // Continue even if gift card restore fails
+      }
+    }
+
+    // 3. Update reservation status
+    await reservationsCollection.updateOne(
+      { _id: id },
+      {
+        $set: {
+          status: 'refunded',
+          refunded_at: new Date(),
+          refund_reason: reason || 'Demande client',
+          refund_amount: totalAmount,
+          refund_details: refundDetails,
+          square_refund_id: squareRefundResult?.refundId || null,
+          updated_at: new Date()
+        }
+      }
+    );
+
+    // 4. Update session booked count
+    if (reservation.status === 'confirmed' || reservation.status === 'pending') {
+      await sessionsCollection.updateOne(
+        { _id: reservation.session_id },
+        { $inc: { booked_count: -reservation.quantity } }
+      );
+    }
+
+    // 5. Send email if requested
+    if (send_email && reservation.guest_email) {
+      try {
+        await sendWorkshopCancellation(reservation.guest_email, {
+          participantName: reservation.guest_name || 'Participant',
+          workshopTitle: workshop?.title || '',
+          sessionDate: session?.session_date || null,
+          reason: reason,
+          refundAmount: totalAmount
+        });
+      } catch (emailError) {
+        console.error('Error sending refund email:', emailError);
+        // Don't fail the refund if email fails
+      }
+    }
+
+    console.log(`✅ Workshop reservation ${id} fully refunded`);
+
+    res.json({
+      success: true,
+      message: 'Remboursement effectué avec succès',
+      data: {
+        reservation_id: id,
+        total_refunded: totalAmount,
+        refund_details: refundDetails,
+        square_refund: squareRefundResult,
+        gift_card_refund: giftCardRefundResult
+      }
+    });
+
+  } catch (error) {
+    console.error('Error processing workshop refund:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du remboursement',
       ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }

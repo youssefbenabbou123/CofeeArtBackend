@@ -3,6 +3,34 @@ import { getCollection } from '../db-mongodb.js';
 
 const router = express.Router();
 
+// GET all product categories (public endpoint)
+router.get('/categories', async (req, res) => {
+  try {
+    const categoriesCollection = await getCollection('product_categories');
+    
+    const categories = await categoriesCollection.find({})
+      .sort({ name: 1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      data: categories.map(cat => ({ 
+        id: cat._id, 
+        name: cat.name, 
+        type: cat.type || null,
+        created_at: cat.created_at 
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching categories:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching categories',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
 // GET all products
 router.get('/', async (req, res) => {
   try {

@@ -27,7 +27,8 @@
     "run-migration-017": "node scripts/run-migration-017.js",
     "fix-gobelet-product": "node scripts/fix-gobelet-product.js",
     "migrate-to-mongodb": "node migrate-to-mongodb.js",
-    "test-mongodb": "node test-mongodb-connection.js"
+    "test-mongodb": "node test-mongodb-connection.js",
+    "delete-custom-categories": "node scripts/delete-custom-categories.js"
   },
   "keywords": [
     "express",
@@ -37,7 +38,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@sendgrid/mail": "^8.1.6",
     "bcrypt": "^5.1.1",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
@@ -50,6 +50,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^7.0.0",
     "multer": "^2.0.2",
+    "nodemailer": "^7.0.12",
     "pdfkit": "^0.17.2",
     "pg": "^8.11.3",
     "square": "^43.2.1"
