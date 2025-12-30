@@ -41,3 +41,4 @@ const updated = await collection.findOne({ _id: id });
 Vu le volume, il serait plus efficace de convertir les routes une par une en suivant le pattern ci-dessus.
 
 
+

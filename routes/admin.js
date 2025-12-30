@@ -2,6 +2,7 @@ import express from 'express';
 import { getCollection } from '../db-mongodb.js';
 import { verifyToken, requireAdmin } from '../middleware/auth.js';
 import { sendRawEmail } from '../services/email.js';
+import { ObjectId } from 'mongodb';
 
 const router = express.Router();
 
@@ -1200,9 +1201,20 @@ router.put('/messages/:id', async (req, res) => {
       });
     }
 
+    // Convert string ID to ObjectId
+    let objectId;
+    try {
+      objectId = new ObjectId(id);
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de message invalide'
+      });
+    }
+
     const messagesCollection = await getCollection('contact_messages');
     const result = await messagesCollection.updateOne(
-      { _id: id },
+      { _id: objectId },
       { $set: { read: read } }
     );
 
@@ -1213,7 +1225,7 @@ router.put('/messages/:id', async (req, res) => {
       });
     }
 
-    const updated = await messagesCollection.findOne({ _id: id });
+    const updated = await messagesCollection.findOne({ _id: objectId });
     res.json({
       success: true,
       message: 'Message mis à jour',
@@ -1242,8 +1254,19 @@ router.delete('/messages/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Convert string ID to ObjectId
+    let objectId;
+    try {
+      objectId = new ObjectId(id);
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de message invalide'
+      });
+    }
+
     const messagesCollection = await getCollection('contact_messages');
-    const result = await messagesCollection.deleteOne({ _id: id });
+    const result = await messagesCollection.deleteOne({ _id: objectId });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({
@@ -1279,8 +1302,19 @@ router.post('/messages/:id/reply', async (req, res) => {
       });
     }
 
+    // Convert string ID to ObjectId
+    let objectId;
+    try {
+      objectId = new ObjectId(id);
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de message invalide'
+      });
+    }
+
     const messagesCollection = await getCollection('contact_messages');
-    const originalMessage = await messagesCollection.findOne({ _id: id });
+    const originalMessage = await messagesCollection.findOne({ _id: objectId });
 
     if (!originalMessage) {
       return res.status(404).json({
@@ -1345,7 +1379,7 @@ router.post('/messages/:id/reply', async (req, res) => {
     // Update the message as replied
     const now = new Date();
     await messagesCollection.updateOne(
-      { _id: id },
+      { _id: objectId },
       { 
         $set: { 
           replied: true, 
@@ -1357,7 +1391,7 @@ router.post('/messages/:id/reply', async (req, res) => {
       }
     );
 
-    const updated = await messagesCollection.findOne({ _id: id });
+    const updated = await messagesCollection.findOne({ _id: objectId });
 
     res.json({
       success: true,

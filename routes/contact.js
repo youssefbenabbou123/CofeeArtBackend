@@ -1,6 +1,7 @@
 import express from 'express';
 import { getCollection } from '../db-mongodb.js';
 import { body, validationResult } from 'express-validator';
+import { sendContactForm, sendContactAutoReply } from '../services/email.js';
 
 const router = express.Router();
 
@@ -54,6 +55,32 @@ router.post('/', validateContact, async (req, res) => {
     };
 
     const result = await collection.insertOne(messageData);
+
+    // Send email to admin
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER;
+    if (adminEmail) {
+      try {
+        await sendContactForm(adminEmail, {
+          name: messageData.name,
+          email: messageData.email,
+          subject: messageData.subject,
+          message: messageData.message
+        });
+      } catch (emailError) {
+        console.error('Error sending admin email:', emailError);
+        // Don't fail the request if email fails
+      }
+    }
+
+    // Send auto-reply to user
+    try {
+      await sendContactAutoReply(messageData.email, {
+        name: messageData.name
+      });
+    } catch (emailError) {
+      console.error('Error sending auto-reply:', emailError);
+      // Don't fail the request if email fails
+    }
 
     res.status(201).json({
       success: true,
